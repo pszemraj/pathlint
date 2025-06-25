@@ -1,27 +1,118 @@
-<!-- These are examples of badges you might want to add to your README:
-     please update the URLs accordingly
-
-[![Built Status](https://api.cirrus-ci.com/github/<USER>/pathlint.svg?branch=main)](https://cirrus-ci.com/github/<USER>/pathlint)
-[![ReadTheDocs](https://readthedocs.org/projects/pathlint/badge/?version=latest)](https://pathlint.readthedocs.io/en/stable/)
-[![Coveralls](https://img.shields.io/coveralls/github/<USER>/pathlint/main.svg)](https://coveralls.io/r/<USER>/pathlint)
-[![PyPI-Server](https://img.shields.io/pypi/v/pathlint.svg)](https://pypi.org/project/pathlint/)
-[![Conda-Forge](https://img.shields.io/conda/vn/conda-forge/pathlint.svg)](https://anaconda.org/conda-forge/pathlint)
-[![Monthly Downloads](https://pepy.tech/badge/pathlint/month)](https://pepy.tech/project/pathlint)
-[![Twitter](https://img.shields.io/twitter/url/http/shields.io.svg?style=social&label=Twitter)](https://twitter.com/pathlint)
--->
-
-[![Project generated with PyScaffold](https://img.shields.io/badge/-PyScaffold-005CA0?logo=pyscaffold)](https://pyscaffold.org/)
-
 # pathlint
 
-> lint python files to detect and shame usage of os.path
+[![CI](https://github.com/pszemraj/pathlint/actions/workflows/ci.yml/badge.svg)](https://github.com/pszemraj/pathlint/actions/workflows/ci.yml)
+[![Python Version](https://img.shields.io/pypi/pyversions/pathlint.svg)](https://pypi.org/project/pathlint/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-A longer description of your project goes here...
+> An opinionated command-line linter for Python that aggressively encourages the use of `pathlib` over `os.path`.
 
+## 🔥 Why pathlint?
 
-<!-- pyscaffold-notes -->
+Still using `os.path` in 2024? It's time to modernize your code! `pathlint` will find every instance of legacy `os.path` usage in your codebase and push you to adopt Python's modern `pathlib` module.
 
-## Note
+### The Aggressive Approach
 
-This project has been set up using PyScaffold 4.6. For details and usage
-information on PyScaffold see https://pyscaffold.org/.
+When `pathlint` finds `os.path` usage, it doesn't hold back:
+
+```
+!!! ARE YOU DUMB?? WHY AREN'T YOU USING PATHLIB ??? !!!
+```
+
+## 📦 Installation
+
+```bash
+pip install pathlint
+```
+
+## 🚀 Usage
+
+### Basic Usage
+
+Lint a single file:
+```bash
+pathlint myfile.py
+```
+
+Lint multiple files:
+```bash
+pathlint file1.py file2.py file3.py
+```
+
+Lint entire directories:
+```bash
+pathlint src/
+```
+
+Lint your entire project:
+```bash
+pathlint .
+```
+
+### Silent Mode
+
+If the aggressive messaging is too much, use `--silent` to suppress the signature message:
+```bash
+pathlint --silent src/
+```
+
+## 📋 Examples
+
+### Bad Code (will be flagged)
+
+```python
+import os.path
+from os import path
+
+# All of these will trigger pathlint
+file_exists = os.path.exists("myfile.txt")
+file_size = os.path.getsize("myfile.txt") 
+joined = os.path.join("dir", "file.txt")
+basename = os.path.basename("/path/to/file.txt")
+```
+
+### Good Code (modern pathlib)
+
+```python
+from pathlib import Path
+
+# Modern, clean, Pythonic
+file_exists = Path("myfile.txt").exists()
+file_size = Path("myfile.txt").stat().st_size
+joined = Path("dir") / "file.txt"
+basename = Path("/path/to/file.txt").name
+```
+
+## 🔍 What pathlint Detects
+
+- `import os.path`
+- `from os import path`
+- `from os.path import ...`
+- Any usage of `os.path.*` functions and attributes
+- `os.path.join()`, `os.path.exists()`, `os.path.dirname()`, etc.
+
+## 🎯 Exit Codes
+
+- **0**: No `os.path` usage found - your code is modern! 
+- **1**: Found `os.path` usage - time to refactor!
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. Make sure to:
+
+1. Add tests for any new functionality
+2. Run the test suite: `pytest`
+3. Format your code: `ruff format .`
+4. Check linting: `ruff check .`
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE.txt](LICENSE.txt) file for details.
+
+## 🙏 Acknowledgments
+
+Built with [PyScaffold](https://pyscaffold.org/) - a project generator for Python packages.
+
+---
+
+**Remember**: Friends don't let friends use `os.path` in modern Python codebases!
