@@ -30,7 +30,7 @@ class TestOSPathVisitor:
         visitor.visit(tree)
         assert len(visitor.found_os_path) == 1
         assert visitor.found_os_path[0] == (1, "from os import path")
-    
+
     def test_from_os_path_import(self):
         """Test detection of 'from os.path import ...'."""
         code = "from os.path import join, exists\nresult = join('a', 'b')"

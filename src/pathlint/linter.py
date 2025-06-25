@@ -113,7 +113,10 @@ def lint_file(filepath: Path) -> List[Tuple[int, str]]:
     try:
         tree: ast.AST = ast.parse(content, filename=str(filepath))
     except SyntaxError as e:
-        print(f"SyntaxError in {filepath} at line {e.lineno}, offset {e.offset}: {e.msg}", file=sys.stderr)
+        print(
+            f"SyntaxError in {filepath} at line {e.lineno}, offset {e.offset}: {e.msg}",
+            file=sys.stderr
+        )
         return []
     except Exception as e:
         print(f"An unexpected error occurred while parsing {filepath}: {e}", file=sys.stderr)
@@ -158,7 +161,10 @@ def main() -> None:
     for path_arg_str in args.paths:
         path_arg: Path = Path(path_arg_str).resolve()
         if not path_arg.exists():
-            print(f"Error: Path '{path_arg_str}' does not exist or is not accessible.", file=sys.stderr)
+            print(
+                f"Error: Path '{path_arg_str}' does not exist or is not accessible.",
+                file=sys.stderr
+            )
             continue
 
         if path_arg.is_dir():
@@ -171,7 +177,10 @@ def main() -> None:
             else:
                 print(f"Skipping non-Python file: {path_arg_str}", file=sys.stderr)
         else:
-            print(f"Warning: '{path_arg_str}' is not a regular file or directory. Skipping.", file=sys.stderr)
+            print(
+                f"Warning: '{path_arg_str}' is not a regular file or directory. Skipping.",
+                file=sys.stderr
+            )
 
     if not files_to_lint:
         print("No Python files found in the specified paths to lint.")
@@ -194,7 +203,10 @@ def main() -> None:
     print("\n--- Linter Summary ---")
     if total_offenses_count > 0:
         print(f"Processed {files_processed_count} Python file(s).")
-        print(f"Found a total of {total_offenses_count} 'os.path' instance(s) in {files_with_offenses_count} file(s).")
+        print(
+            f"Found a total of {total_offenses_count} 'os.path' instance(s) "
+            f"in {files_with_offenses_count} file(s)."
+        )
         print("Please refactor to pathlib.")
         sys.exit(1)
     else:
