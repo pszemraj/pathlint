@@ -1,218 +1,256 @@
-# File: pathlint_project/pathlint/linter.py
+#!/usr/bin/env python3
+"""Fast os.path detector with type annotation support."""
+
 import argparse
 import ast
 import sys
+from collections import defaultdict
 from pathlib import Path
-from typing import List, Set, Tuple  # For type hinting
+from typing import Dict, List, Optional, Set, Tuple
 
-# --- Constants ---
-OFFENSE_MESSAGE: str = "\n\t!!! ARE YOU DUMB?? WHY AREN'T YOU USING PATHLIB ??? !!!\n"
-PYTHON_FILE_SUFFIX: str = ".py"
 
-# --- AST Visitor ---
-class OSPathVisitor(ast.NodeVisitor):
-    """
-    AST visitor to find os.path usage.
-    This class analyzes the abstract syntax tree of Python code
-    to identify imports and attribute accesses related to 'os.path'.
-    """
+class OSPathDetector(ast.NodeVisitor):
+    """Single-pass AST visitor that catches ALL os.path usage patterns."""
+
     def __init__(self, lines: List[str]) -> None:
-        """
-        Initializes the visitor.
-        Args:
-            lines: A list of strings representing the lines of code being analyzed.
-                   Used to provide context for found offenses.
-        """
-        self.found_os_path: List[Tuple[int, str]] = []
-        self.lines: List[str] = lines
+        self.offenses: Dict[int, Set[str]] = defaultdict(set)  # Dedupes automatically
+        self.lines = lines
+        self.os_imported = False
+        self.path_aliases: Set[str] = set()  # Track 'path', 'ospath', etc.
 
-    def _add_offense(self, node: ast.AST) -> None:
-        """Helper to add an offense, ensuring line content is available."""
-        if 0 <= node.lineno - 1 < len(self.lines):
-            line_content: str = self.lines[node.lineno - 1].strip()
-            self.found_os_path.append((node.lineno, line_content))
-        else:
-            # Fallback if line number is out of bounds for some reason
-            self.found_os_path.append((node.lineno, "<source line not available>"))
-
+    def _record(self, node: ast.AST, context: str = "") -> None:
+        """Record unique offense by line number."""
+        if hasattr(node, "lineno"):
+            line_idx = node.lineno - 1
+            if 0 <= line_idx < len(self.lines):
+                line = self.lines[line_idx].strip()
+                self.offenses[node.lineno].add(line)
 
     def visit_Import(self, node: ast.Import) -> None:
-        """
-        Catches 'import os.path'.
-        """
+        """Detect: import os, import os.path, import os.path as X"""
         for alias in node.names:
-            if alias.name == 'os.path':
-                self._add_offense(node)
+            if alias.name == "os":
+                self.os_imported = True  # NOW we can detect os.path.X
+            elif alias.name == "os.path":
+                self._record(node)
+                self.path_aliases.add(alias.asname or "os.path")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """
-        Catches 'from os import path' and 'from os.path import ...'.
-        """
-        if node.module == 'os':
+        """Detect: from os import path [as X], from os.path import ..."""
+        if node.module == "os":
             for alias in node.names:
-                if alias.name == 'path':
-                    self._add_offense(node)
-        elif node.module == 'os.path':
-            # Catches any import from os.path (e.g., from os.path import join, exists)
-            self._add_offense(node)
+                if alias.name == "path":
+                    self._record(node)
+                    self.path_aliases.add(alias.asname or "path")
+        elif node.module and "os.path" in node.module:
+            self._record(node)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        """
-        Catches direct attribute access like 'os.path.something'.
-        Example: `my_var = os.path.sep`
-        """
-        if (isinstance(node.value, ast.Attribute) and
-            isinstance(node.value.value, ast.Name) and
-            node.value.value.id == 'os' and
-            node.value.attr == 'path'):
-            self._add_offense(node)
+        """Detect: os.path.X, aliased_path.X"""
+        # Direct os.path usage
+        if (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "os"
+            and node.value.attr == "path"
+        ) or (isinstance(node.value, ast.Name) and node.value.id in self.path_aliases):
+            self._record(node)
         self.generic_visit(node)
 
-    def visit_Call(self, node: ast.Call) -> None:
-        """
-        Catches function calls like 'os.path.join()'.
-        Example: `os.path.join("a", "b")`
-        """
-        if (isinstance(node.func, ast.Attribute) and
-            isinstance(node.func.value, ast.Attribute) and
-            isinstance(node.func.value.value, ast.Name) and
-            node.func.value.value.id == 'os' and
-            node.func.value.attr == 'path'):
-            self._add_offense(node)
+    # TYPE ANNOTATION SUPPORT (Original doesn't have this!)
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        """Detect os.path in type annotations: x: os.path.PathLike"""
+        self._check_annotation(node.annotation, node)
         self.generic_visit(node)
 
-# --- Linter Logic ---
+    def visit_arg(self, node: ast.arg) -> None:
+        """Detect os.path in function argument annotations."""
+        if node.annotation:
+            self._check_annotation(node.annotation, node)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Detect os.path in return type annotations."""
+        if node.returns:
+            self._check_annotation(node.returns, node)
+        self.generic_visit(node)
+
+    def _check_annotation(self, annotation: ast.AST, source_node: ast.AST) -> None:
+        """Recursively check annotations for os.path."""
+        for child in ast.walk(annotation):
+            if isinstance(child, ast.Attribute):
+                self.visit_Attribute(child)
+
+
 def lint_file(filepath: Path) -> List[Tuple[int, str]]:
-    """
-    Lints a single Python file for 'os.path' usage.
-
-    Args:
-        filepath: The Path object representing the Python file to lint.
-
-    Returns:
-        A sorted list of unique tuples, where each tuple contains
-        (line_number, line_content) for each 'os.path' usage found.
-        Returns an empty list if no offenses are found or if the file
-        cannot be read/parsed.
-    """
+    """Fast single-pass lint with early termination."""
     try:
-        content: str = filepath.read_text(encoding='utf-8')
-        lines: List[str] = content.splitlines()
-    except FileNotFoundError:
-        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        content = filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"✗ Cannot read {filepath}: {e.__class__.__name__}", file=sys.stderr)
         return []
-    except OSError as e:
-        print(f"Error reading file {filepath}: {e}", file=sys.stderr)
-        return []
-    except Exception as e:
-        print(f"An unexpected error occurred while reading {filepath}: {e}", file=sys.stderr)
+
+    lines = content.splitlines()
+
+    # PERFORMANCE: Skip files without 'os' or 'path' strings
+    if "os" not in content and "path" not in content:
         return []
 
     try:
-        tree: ast.AST = ast.parse(content, filename=str(filepath))
+        tree = ast.parse(content, filename=str(filepath))
     except SyntaxError as e:
-        print(
-            f"SyntaxError in {filepath} at line {e.lineno}, offset {e.offset}: {e.msg}",
-            file=sys.stderr
-        )
-        return []
-    except Exception as e:
-        print(f"An unexpected error occurred while parsing {filepath}: {e}", file=sys.stderr)
+        print(f"✗ Syntax error in {filepath}:{e.lineno}:{e.offset}", file=sys.stderr)
         return []
 
+    detector = OSPathDetector(lines)
+    detector.visit(tree)
 
-    visitor: OSPathVisitor = OSPathVisitor(lines)
-    visitor.visit(tree)
-    unique_offenses: Set[Tuple[int, str]] = set(visitor.found_os_path)
-    return sorted(list(unique_offenses))
+    # Convert to sorted list (no duplicates thanks to Set)
+    result = []
+    for lineno in sorted(detector.offenses.keys()):
+        line_content = next(iter(detector.offenses[lineno]))
+        result.append((lineno, line_content))
 
-# --- Main Execution ---
-def main() -> None:
-    """
-    Main command-line interface function.
-    Parses arguments, collects Python files, lints them, and reports findings.
-    Exits with status code 1 if offenses are found, 0 otherwise.
-    """
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        description="A custom Python linter that scolds you for using 'os.path'."
-    )
-    parser.add_argument(
-        "paths",
-        metavar="PATH_ARG",
-        nargs="+",
-        type=str,
-        help="One or more Python files or directories to lint."
-    )
-    parser.add_argument(
-        "--silent",
-        action="store_true",
-        help="Suppress the custom offense message, only show findings."
-    )
+    return result
 
-    args: argparse.Namespace = parser.parse_args()
 
-    total_offenses_count: int = 0
-    files_with_offenses_count: int = 0
-    files_processed_count: int = 0
-    files_to_lint: Set[Path] = set()
+def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = None) -> Set[Path]:
+    """Efficiently collect Python files with smart exclusions."""
+    if exclude_patterns is None:
+        exclude_patterns = {
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".git",
+            "node_modules",
+            ".tox",
+            "build",
+            "dist",
+        }
 
-    for path_arg_str in args.paths:
-        path_arg: Path = Path(path_arg_str).resolve()
-        if not path_arg.exists():
-            print(
-                f"Error: Path '{path_arg_str}' does not exist or is not accessible.",
-                file=sys.stderr
-            )
+    files = set()
+    for path_str in paths:
+        path = Path(path_str).resolve()
+        if not path.exists():
+            print(f"✗ Path does not exist: {path_str}", file=sys.stderr)
             continue
-
-        if path_arg.is_dir():
-            for py_file in path_arg.rglob(f"*{PYTHON_FILE_SUFFIX}"):
-                if py_file.is_file():
-                    files_to_lint.add(py_file)
-        elif path_arg.is_file():
-            if path_arg.suffix == PYTHON_FILE_SUFFIX:
-                files_to_lint.add(path_arg)
-            else:
-                print(f"Skipping non-Python file: {path_arg_str}", file=sys.stderr)
+        if path.is_file():
+            if path.suffix == ".py":
+                files.add(path)
         else:
-            print(
-                f"Warning: '{path_arg_str}' is not a regular file or directory. Skipping.",
-                file=sys.stderr
-            )
+            # Smart exclusion during traversal
+            for py_file in path.rglob("*.py"):
+                if not any(part in exclude_patterns for part in py_file.parts):
+                    files.add(py_file)
+    return files
 
-    if not files_to_lint:
-        print("No Python files found in the specified paths to lint.")
-        sys.exit(0)
 
-    sorted_files_to_lint: List[Path] = sorted(list(files_to_lint))
+def main() -> None:
+    """CLI with professional output and useful features."""
+    parser = argparse.ArgumentParser(
+        description="Detect os.path usage in Python files",
+        epilog="Exit codes: 0 = clean, 1 = os.path found, 2 = errors",
+    )
+    parser.add_argument("paths", nargs="+", help="Files or directories to check")
+    parser.add_argument(
+        "--aggressive",
+        action="store_true",
+        help="Show aggressive message when os.path is found",
+    )
+    parser.add_argument("--stats", action="store_true", help="Show detailed statistics")
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically fix os.path usage (modifies files!)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what --fix would change without modifying files",
+    )
 
-    for filepath in sorted_files_to_lint:
-        files_processed_count += 1
-        offenses: List[Tuple[int, str]] = lint_file(filepath)
+    args = parser.parse_args()
+
+    # Handle --fix mode
+    if args.fix or args.dry_run:
+        from pathlint.autofix import fix_file
+
+        files = find_python_files(args.paths)
+        if not files:
+            print("No Python files found to fix")
+            sys.exit(2)
+
+        total_files_fixed = 0
+        total_replacements = 0
+
+        for filepath in sorted(files):
+            replacements = fix_file(filepath, args.dry_run)
+            if replacements > 0:
+                total_files_fixed += 1
+                total_replacements += replacements
+
+        print(f"\n{'─' * 40}")
+
+        if args.dry_run:
+            print("Dry run complete:")
+            print(f"  Would fix {total_files_fixed} file(s)")
+            print(f"  Would make {total_replacements} replacement(s)")
+            print("\nRun with --fix to apply changes")
+        else:
+            if total_replacements > 0:
+                print(f"✓ Fixed {total_files_fixed} file(s)")
+                print(f"✓ Made {total_replacements} replacement(s)")
+                print("\n⚠️  Please review changes and test your code!")
+            else:
+                print("✓ No os.path usage found to fix")
+        sys.exit(0 if total_replacements == 0 else 1)
+
+    # Normal linting mode
+    files = find_python_files(args.paths)
+    if not files:
+        print("No Python files found to check")
+        sys.exit(2)
+
+    total_offenses = 0
+    files_with_offenses = []
+
+    for filepath in sorted(files):
+        offenses = lint_file(filepath)
         if offenses:
-            files_with_offenses_count += 1
-            total_offenses_count += len(offenses)
-            print(f"\nOffenses found in: {filepath}")
-            for lineno, line_content in offenses:
-                print(f"  L{lineno}: {line_content}")
-            if not args.silent:
-                print(OFFENSE_MESSAGE)
+            files_with_offenses.append(filepath)
+            total_offenses += len(offenses)
+            print(f"\n{filepath}")
+            for lineno, line in offenses:
+                print(f"  L{lineno:4d}: {line}")
 
-    print("\n--- Linter Summary ---")
-    if total_offenses_count > 0:
-        print(f"Processed {files_processed_count} Python file(s).")
-        print(
-            f"Found a total of {total_offenses_count} 'os.path' instance(s) "
-            f"in {files_with_offenses_count} file(s)."
-        )
-        print("Please refactor to pathlib.")
+    print(f"\n{'─' * 40}")
+
+    if total_offenses > 0:
+        if args.aggressive:
+            print("\n⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️\n")
+
+        print(f"Files checked:     {len(files)}")
+        print(f"Files with issues: {len(files_with_offenses)}")
+        print(f"Total violations:  {total_offenses}")
+
+        if args.stats and files_with_offenses:
+            print("\nWorst offenders:")
+            file_counts = {}
+            for f in files_with_offenses:
+                count = len(lint_file(f))
+                if count > 0:
+                    file_counts[f] = count
+            for f, count in sorted(file_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+                print(f"  {count:3d} - {f.name}")
+
+        print("\n✗ Found os.path usage. Migrate to pathlib.")
         sys.exit(1)
     else:
-        print(f"Processed {files_processed_count} Python file(s).")
-        print("Congratulations! No 'os.path' usage found.")
+        print(f"✓ {len(files)} files checked - no os.path usage found!")
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
