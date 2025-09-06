@@ -11,3 +11,6 @@ venv/
 .idea/
 *.swp
 .DS_Store
+
+# Auto-generated version file
+src/pathlint/_version.py

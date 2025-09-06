@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pathlint"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Fast linter to detect os.path usage and encourage pathlib adoption"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,6 +28,8 @@ pathlint = "pathlint.linter:main"
 
 [project.urls]
 Repository = "https://github.com/pszemraj/pathlint"
+Issues = "https://github.com/pszemraj/pathlint/issues"
+Changelog = "https://github.com/pszemraj/pathlint/releases"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0", "pytest-cov>=4.0"]
@@ -51,3 +53,9 @@ branch = true
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "def __repr__", "raise NotImplementedError"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/pathlint/_version.py"
