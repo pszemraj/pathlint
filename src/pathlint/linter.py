@@ -50,12 +50,15 @@ class OSPathDetector(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """Detect: os.path.X, aliased_path.X"""
         # Direct os.path usage
-        if (
-            isinstance(node.value, ast.Attribute)
-            and isinstance(node.value.value, ast.Name)
-            and node.value.value.id == "os"
-            and node.value.attr == "path"
-        ) or (isinstance(node.value, ast.Name) and node.value.id in self.path_aliases):
+        if isinstance(node.value, ast.Attribute):
+            if (
+                isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "os"
+                and node.value.attr == "path"
+            ):
+                self._record(node)
+        # Aliased path usage
+        elif isinstance(node.value, ast.Name) and node.value.id in self.path_aliases:
             self._record(node)
         self.generic_visit(node)
 
@@ -73,6 +76,12 @@ class OSPathDetector(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Detect os.path in return type annotations."""
+        if node.returns:
+            self._check_annotation(node.returns, node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """Detect os.path in async function return type annotations."""
         if node.returns:
             self._check_annotation(node.returns, node)
         self.generic_visit(node)
@@ -147,6 +156,43 @@ def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = N
     return files
 
 
+def main_autofix(args: argparse.Namespace) -> int:
+    """Handle autofix mode separately."""
+    from pathlint.autofix import fix_file
+
+    files = find_python_files(args.paths)
+    if not files:
+        print("No Python files found to fix")
+        return 2
+
+    total_files_fixed = 0
+    total_replacements = 0
+
+    for filepath in sorted(files):
+        replacements = fix_file(filepath, args.dry_run)
+        if replacements > 0:
+            total_files_fixed += 1
+            total_replacements += replacements
+
+    print(f"\n{'─' * 40}")
+
+    if args.dry_run:
+        print("Dry run complete:")
+        print(f"  Would fix {total_files_fixed} file(s)")
+        print(f"  Would make {total_replacements} replacement(s)")
+        print("\nRun with --fix to apply changes")
+    else:
+        if total_replacements > 0:
+            print(f"✓ Fixed {total_files_fixed} file(s)")
+            print(f"✓ Made {total_replacements} replacement(s)")
+            print("\n⚠️  Please review changes and test your code!")
+        else:
+            print("✓ No os.path usage found to fix")
+
+    # Return 0 if fixes were successfully applied (or no fixes needed)
+    return 0
+
+
 def main() -> None:
     """CLI with professional output and useful features."""
     parser = argparse.ArgumentParser(
@@ -173,39 +219,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Handle --fix mode
+    # Handle --fix mode separately
     if args.fix or args.dry_run:
-        from pathlint.autofix import fix_file
-
-        files = find_python_files(args.paths)
-        if not files:
-            print("No Python files found to fix")
-            sys.exit(2)
-
-        total_files_fixed = 0
-        total_replacements = 0
-
-        for filepath in sorted(files):
-            replacements = fix_file(filepath, args.dry_run)
-            if replacements > 0:
-                total_files_fixed += 1
-                total_replacements += replacements
-
-        print(f"\n{'─' * 40}")
-
-        if args.dry_run:
-            print("Dry run complete:")
-            print(f"  Would fix {total_files_fixed} file(s)")
-            print(f"  Would make {total_replacements} replacement(s)")
-            print("\nRun with --fix to apply changes")
-        else:
-            if total_replacements > 0:
-                print(f"✓ Fixed {total_files_fixed} file(s)")
-                print(f"✓ Made {total_replacements} replacement(s)")
-                print("\n⚠️  Please review changes and test your code!")
-            else:
-                print("✓ No os.path usage found to fix")
-        sys.exit(0 if total_replacements == 0 else 1)
+        sys.exit(main_autofix(args))
 
     # Normal linting mode
     files = find_python_files(args.paths)

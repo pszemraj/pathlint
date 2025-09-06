@@ -191,7 +191,7 @@ if filepath.exists():
 
 **Note**: While pathlib is recommended for most use cases, there are rare scenarios where `os.path` might offer better performance[^1].
 
-[^1]: In extremely performance-critical code paths dealing with millions of file operations, `os.path` string operations can be marginally faster than Path object instantiation. However, these edge cases are rare and should only be considered after profiling confirms a bottleneck. If you're reading this footnote to justify using `os.path`, you probably shouldn't be using it.
+[^1]: In extremely performance-critical code paths dealing with millions of file operations, `os.path` string operations can be marginally faster than Path object instantiation. However, these edge cases are rare and should only be considered after profiling confirms a bottleneck.
 
 ## License
 
