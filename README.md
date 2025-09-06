@@ -48,8 +48,8 @@ pathlint . --stats
 pathlint . --aggressive
 
 # Auto-fix mode (experimental)
-python -m pathlint.autofix --dry-run src/
-python -m pathlint.autofix src/  # Actually apply fixes
+pathlint --dry-run src/  # Preview changes
+pathlint --fix src/      # Apply fixes
 ```
 
 ## What It Detects
@@ -129,14 +129,17 @@ Benchmarks on real codebases:
 
 ## Auto-fix (Experimental)
 
-The autofix module can automatically migrate common patterns:
+Pathlint can automatically migrate common os.path patterns:
 
 ```bash
-# Preview changes
-python -m pathlint.autofix --dry-run myfile.py
+# Preview changes without modifying files
+pathlint --dry-run myfile.py
 
-# Apply changes
-python -m pathlint.autofix myfile.py
+# Apply fixes (modifies files!)
+pathlint --fix myfile.py
+
+# Fix entire directory
+pathlint --fix src/
 ```
 
 Supports migration of:

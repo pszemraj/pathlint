@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Auto-fixer for common os.path patterns to pathlib equivalents."""
+
 import argparse
 import re
 import sys
@@ -9,36 +10,32 @@ from typing import List, Tuple
 # Common os.path to pathlib replacements
 REPLACEMENTS: List[Tuple[str, str]] = [
     # Import statements
-    (r'^import os\.path$', 'from pathlib import Path'),
-    (r'^from os import path$', 'from pathlib import Path'),
-    (r'^from os\.path import (.+)$', 'from pathlib import Path'),
-
+    (r"^import os\.path$", "from pathlib import Path"),
+    (r"^from os import path$", "from pathlib import Path"),
+    (r"^from os\.path import (.+)$", "from pathlib import Path"),
     # Function replacements
-    (r'os\.path\.exists\(([^)]+)\)', r'Path(\1).exists()'),
-    (r'os\.path\.isfile\(([^)]+)\)', r'Path(\1).is_file()'),
-    (r'os\.path\.isdir\(([^)]+)\)', r'Path(\1).is_dir()'),
-    (r'os\.path\.isabs\(([^)]+)\)', r'Path(\1).is_absolute()'),
-    (r'os\.path\.basename\(([^)]+)\)', r'Path(\1).name'),
-    (r'os\.path\.dirname\(([^)]+)\)', r'str(Path(\1).parent)'),
-    (r'os\.path\.abspath\(([^)]+)\)', r'str(Path(\1).resolve())'),
-    (r'os\.path\.expanduser\(([^)]+)\)', r'str(Path(\1).expanduser())'),
-    (r'os\.path\.splitext\(([^)]+)\)', r'(Path(\1).stem, Path(\1).suffix)'),
-
+    (r"os\.path\.exists\(([^)]+)\)", r"Path(\1).exists()"),
+    (r"os\.path\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
+    (r"os\.path\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
+    (r"os\.path\.isabs\(([^)]+)\)", r"Path(\1).is_absolute()"),
+    (r"os\.path\.basename\(([^)]+)\)", r"Path(\1).name"),
+    (r"os\.path\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
+    (r"os\.path\.abspath\(([^)]+)\)", r"str(Path(\1).resolve())"),
+    (r"os\.path\.expanduser\(([^)]+)\)", r"str(Path(\1).expanduser())"),
+    (r"os\.path\.splitext\(([^)]+)\)", r"(Path(\1).stem, Path(\1).suffix)"),
     # Join patterns - handle 2 and 3 arguments
-    (r'os\.path\.join\(([^,]+),\s*([^,]+),\s*([^)]+)\)', r'str(Path(\1) / \2 / \3)'),
-    (r'os\.path\.join\(([^,]+),\s*([^)]+)\)', r'str(Path(\1) / \2)'),
-
+    (r"os\.path\.join\(([^,]+),\s*([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2 / \3)"),
+    (r"os\.path\.join\(([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2)"),
     # Path attributes
-    (r'os\.path\.sep', 'Path.sep if hasattr(Path, "sep") else "/"'),
-    (r'os\.path\.pathsep', 'Path.pathsep if hasattr(Path, "pathsep") else ":"'),
-
+    (r"os\.path\.sep", 'Path.sep if hasattr(Path, "sep") else "/"'),
+    (r"os\.path\.pathsep", 'Path.pathsep if hasattr(Path, "pathsep") else ":"'),
     # Handle 'from os import path' usage
-    (r'\bpath\.exists\(([^)]+)\)', r'Path(\1).exists()'),
-    (r'\bpath\.isfile\(([^)]+)\)', r'Path(\1).is_file()'),
-    (r'\bpath\.isdir\(([^)]+)\)', r'Path(\1).is_dir()'),
-    (r'\bpath\.join\(([^,]+),\s*([^)]+)\)', r'str(Path(\1) / \2)'),
-    (r'\bpath\.basename\(([^)]+)\)', r'Path(\1).name'),
-    (r'\bpath\.dirname\(([^)]+)\)', r'str(Path(\1).parent)'),
+    (r"\bpath\.exists\(([^)]+)\)", r"Path(\1).exists()"),
+    (r"\bpath\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
+    (r"\bpath\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
+    (r"\bpath\.join\(([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2)"),
+    (r"\bpath\.basename\(([^)]+)\)", r"Path(\1).name"),
+    (r"\bpath\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
 ]
 
 
@@ -95,12 +92,13 @@ def fix_file(filepath: Path, dry_run: bool = False) -> int:
             print(f"\n{filepath}: {total_replacements} replacement(s) would be made")
             # Show diff preview
             import difflib
+
             diff = difflib.unified_diff(
                 original_content.splitlines(keepends=True),
                 content.splitlines(keepends=True),
                 fromfile=str(filepath),
                 tofile=str(filepath) + " (fixed)",
-                lineterm=""
+                lineterm="",
             )
             for line in diff:
                 if line.startswith("+") and not line.startswith("+++"):
@@ -120,24 +118,19 @@ def main() -> None:
     """CLI for auto-fixing os.path usage."""
     parser = argparse.ArgumentParser(
         description="Auto-fix os.path usage to pathlib",
-        epilog="WARNING: This tool makes automated changes. Review carefully!"
+        epilog="WARNING: This tool makes automated changes. Review carefully!",
     )
     parser.add_argument("paths", nargs="+", help="Files or directories to fix")
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be changed without modifying files"
+        "--dry-run", action="store_true", help="Show what would be changed without modifying files"
     )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored diff output"
-    )
+    parser.add_argument("--no-color", action="store_true", help="Disable colored diff output")
 
     args = parser.parse_args()
 
     # Collect Python files
     from pathlint.linter import find_python_files
+
     files = find_python_files(args.paths)
 
     if not files:
@@ -171,4 +164,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

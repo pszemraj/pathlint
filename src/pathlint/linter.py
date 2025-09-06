@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fast os.path detector with type annotation support."""
+
 import argparse
 import ast
 import sys
@@ -115,9 +116,7 @@ def lint_file(filepath: Path) -> List[Tuple[int, str]]:
     return result
 
 
-def find_python_files(
-    paths: List[str], exclude_patterns: Optional[Set[str]] = None
-) -> Set[Path]:
+def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = None) -> Set[Path]:
     """Efficiently collect Python files with smart exclusions."""
     if exclude_patterns is None:
         exclude_patterns = {
@@ -161,10 +160,55 @@ def main() -> None:
         help="Show aggressive message when os.path is found",
     )
     parser.add_argument("--stats", action="store_true", help="Show detailed statistics")
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically fix os.path usage (modifies files!)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what --fix would change without modifying files",
+    )
 
     args = parser.parse_args()
-    files = find_python_files(args.paths)
 
+    # Handle --fix mode
+    if args.fix or args.dry_run:
+        from pathlint.autofix import fix_file
+
+        files = find_python_files(args.paths)
+        if not files:
+            print("No Python files found to fix")
+            sys.exit(2)
+
+        total_files_fixed = 0
+        total_replacements = 0
+
+        for filepath in sorted(files):
+            replacements = fix_file(filepath, args.dry_run)
+            if replacements > 0:
+                total_files_fixed += 1
+                total_replacements += replacements
+
+        print(f"\n{'─' * 40}")
+
+        if args.dry_run:
+            print("Dry run complete:")
+            print(f"  Would fix {total_files_fixed} file(s)")
+            print(f"  Would make {total_replacements} replacement(s)")
+            print("\nRun with --fix to apply changes")
+        else:
+            if total_replacements > 0:
+                print(f"✓ Fixed {total_files_fixed} file(s)")
+                print(f"✓ Made {total_replacements} replacement(s)")
+                print("\n⚠️  Please review changes and test your code!")
+            else:
+                print("✓ No os.path usage found to fix")
+        sys.exit(0 if total_replacements == 0 else 1)
+
+    # Normal linting mode
+    files = find_python_files(args.paths)
     if not files:
         print("No Python files found to check")
         sys.exit(2)
@@ -198,9 +242,7 @@ def main() -> None:
                 count = len(lint_file(f))
                 if count > 0:
                     file_counts[f] = count
-            for f, count in sorted(
-                file_counts.items(), key=lambda x: x[1], reverse=True
-            )[:5]:
+            for f, count in sorted(file_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
                 print(f"  {count:3d} - {f.name}")
 
         print("\n✗ Found os.path usage. Migrate to pathlib.")
@@ -212,4 +254,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

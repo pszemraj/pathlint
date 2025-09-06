@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Comprehensive test suite for pathlint."""
+
 import ast
 import sys
 from pathlib import Path
@@ -171,7 +172,7 @@ print(os.path.exists('test'))
     def test_lint_file_unicode_error(self, tmp_path, capsys, monkeypatch):
         """Test handling of unicode decode errors."""
         test_file = tmp_path / "test.py"
-        test_file.write_bytes(b'\xff\xfe')  # Invalid UTF-8
+        test_file.write_bytes(b"\xff\xfe")  # Invalid UTF-8
 
         offenses = lint_file(test_file)
         assert len(offenses) == 0
@@ -266,7 +267,7 @@ x = os.path.exists('test')""")
 
         (tmp_path / "clean.py").write_text("from pathlib import Path")
 
-        monkeypatch.setattr(sys, 'argv', ['pathlint', str(tmp_path), '--stats'])
+        monkeypatch.setattr(sys, "argv", ["pathlint", str(tmp_path), "--stats"])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -281,7 +282,7 @@ x = os.path.exists('test')""")
         test_file = tmp_path / "test.py"
         test_file.write_text("import os.path")
 
-        monkeypatch.setattr(sys, 'argv', ['pathlint', str(test_file), '--aggressive'])
+        monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file), "--aggressive"])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -298,7 +299,7 @@ x = os.path.join('a', 'b')
 def f(p: os.path.PathLike):
     pass""")
 
-        monkeypatch.setattr(sys, 'argv', ['pathlint', str(test_file)])
+        monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file)])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -319,7 +320,7 @@ def f(p: os.path.PathLike):
         test_file = tmp_path / "test.py"
         test_file.write_text("from pathlib import Path\nprint(Path.cwd())")
 
-        monkeypatch.setattr(sys, 'argv', ['pathlint', str(test_file)])
+        monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file)])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -335,7 +336,7 @@ def f(p: os.path.PathLike):
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
-        monkeypatch.setattr(sys, 'argv', ['pathlint', str(empty_dir)])
+        monkeypatch.setattr(sys, "argv", ["pathlint", str(empty_dir)])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -346,7 +347,7 @@ def f(p: os.path.PathLike):
 
     def test_main_nonexistent_path_error(self, capsys, monkeypatch):
         """Test error handling for non-existent paths."""
-        monkeypatch.setattr(sys, 'argv', ['pathlint', '/nonexistent/path'])
+        monkeypatch.setattr(sys, "argv", ["pathlint", "/nonexistent/path"])
 
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -354,4 +355,3 @@ def f(p: os.path.PathLike):
         assert exc_info.value.code == 2
         captured = capsys.readouterr()
         assert "✗ Path does not exist" in captured.err
-
