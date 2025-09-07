@@ -3,12 +3,13 @@
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://pypi.org/project/pathlint/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![PyPI version](https://badge.fury.io/py/pathlint.svg)](https://pypi.org/project/pathlint/)
 
 > Fast linter to detect os.path usage and encourage pathlib adoption
 
 ## Why pathlint?
 
-Still using `os.path` in 2025? `pathlint` is a fast, comprehensive linter that detects **all** `os.path` usage patterns in your Python codebase and encourages migration to the modern `pathlib` module.
+Still using `os.path` in 2025+? `pathlint` is a fast, comprehensive linter that detects **all** `os.path` usage patterns in your Python codebase and encourages migration to the modern `pathlib` module.
 
 ### Key Features
 
@@ -206,4 +207,4 @@ Contributions welcome! Please ensure:
 
 ---
 
-**Remember**: Friends don't let friends use `os.path` in 2025!
+**Remember**: Friends don't let friends use `os.path` in 2025+!
