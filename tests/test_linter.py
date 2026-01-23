@@ -13,7 +13,7 @@ from pathlint.linter import OSPathDetector, find_python_files, lint_file, main
 class TestOSPathDetector:
     """Test the enhanced AST visitor that detects ALL os.path patterns."""
 
-    def test_import_os_path(self):
+    def test_import_os_path(self) -> None:
         """Test detection of 'import os.path'."""
         code = "import os.path\nprint('hello')"
         lines = code.splitlines()
@@ -24,7 +24,7 @@ class TestOSPathDetector:
         assert 1 in detector.offenses
         assert "import os.path" in detector.offenses[1]
 
-    def test_import_os_path_as_alias(self):
+    def test_import_os_path_as_alias(self) -> None:
         """Test detection of 'import os.path as ospath'."""
         code = "import os.path as ospath\nprint(ospath.exists('test'))"
         lines = code.splitlines()
@@ -35,7 +35,7 @@ class TestOSPathDetector:
         assert 1 in detector.offenses
         assert "ospath" in detector.path_aliases
 
-    def test_import_os_then_use_path(self):
+    def test_import_os_then_use_path(self) -> None:
         """Test detection of 'import os' followed by 'os.path.exists()'."""
         code = "import os\nresult = os.path.exists('test')"
         lines = code.splitlines()
@@ -46,7 +46,7 @@ class TestOSPathDetector:
         assert 2 in detector.offenses
         assert "os.path.exists('test')" in next(iter(detector.offenses[2]))
 
-    def test_from_os_import_path(self):
+    def test_from_os_import_path(self) -> None:
         """Test detection of 'from os import path'."""
         code = "from os import path\nprint(path.join('a', 'b'))"
         lines = code.splitlines()
@@ -58,7 +58,7 @@ class TestOSPathDetector:
         # Should also detect aliased usage
         assert 2 in detector.offenses
 
-    def test_from_os_import_path_as_alias(self):
+    def test_from_os_import_path_as_alias(self) -> None:
         """Test detection of 'from os import path as ospath'."""
         code = "from os import path as ospath\nresult = ospath.exists('file')"
         lines = code.splitlines()
@@ -70,7 +70,7 @@ class TestOSPathDetector:
         # Should detect the aliased usage
         assert 2 in detector.offenses
 
-    def test_from_os_path_import(self):
+    def test_from_os_path_import(self) -> None:
         """Test detection of 'from os.path import ...'."""
         code = "from os.path import join, exists\nresult = join('a', 'b')"
         lines = code.splitlines()
@@ -80,7 +80,7 @@ class TestOSPathDetector:
         assert 1 in detector.offenses
         assert "from os.path import join, exists" in detector.offenses[1]
 
-    def test_type_annotation_function_arg(self):
+    def test_type_annotation_function_arg(self) -> None:
         """Test detection in function argument type annotations."""
         code = "import os\ndef process(path: os.path.PathLike):\n    pass"
         lines = code.splitlines()
@@ -90,7 +90,7 @@ class TestOSPathDetector:
         assert 2 in detector.offenses
         assert "def process(path: os.path.PathLike):" in next(iter(detector.offenses[2]))
 
-    def test_type_annotation_return(self):
+    def test_type_annotation_return(self) -> None:
         """Test detection in function return type annotations."""
         code = "import os\ndef get_path() -> os.path.PathLike:\n    return 'test'"
         lines = code.splitlines()
@@ -99,7 +99,7 @@ class TestOSPathDetector:
         detector.visit(tree)
         assert 2 in detector.offenses
 
-    def test_type_annotation_variable(self):
+    def test_type_annotation_variable(self) -> None:
         """Test detection in variable type annotations."""
         code = "import os\npath_var: os.path.PathLike = 'test'"
         lines = code.splitlines()
@@ -108,7 +108,7 @@ class TestOSPathDetector:
         detector.visit(tree)
         assert 2 in detector.offenses
 
-    def test_no_duplicate_counting(self):
+    def test_no_duplicate_counting(self) -> None:
         """Test that multiple os.path on same line are deduplicated."""
         code = "import os\nx = os.path.join(os.path.dirname(__file__), 'test')"
         lines = code.splitlines()
@@ -119,7 +119,7 @@ class TestOSPathDetector:
         assert 2 in detector.offenses
         assert len(detector.offenses[2]) == 1  # Set deduplicates
 
-    def test_no_os_path_usage(self):
+    def test_no_os_path_usage(self) -> None:
         """Test that pathlib usage is not flagged."""
         code = """from pathlib import Path
 p = Path('test.txt')
@@ -134,7 +134,7 @@ print(p.exists())"""
 class TestLintFile:
     """Test the enhanced lint_file function."""
 
-    def test_early_termination_no_os_or_path(self, tmp_path):
+    def test_early_termination_no_os_or_path(self, tmp_path: Path) -> None:
         """Test that files without 'os' or 'path' skip AST parsing."""
         test_file = tmp_path / "test.py"
         test_file.write_text("""import sys
@@ -146,7 +146,7 @@ def main():
         assert len(offenses) == 0
         # File should be skipped early without AST parsing
 
-    def test_lint_file_with_offenses(self, tmp_path):
+    def test_lint_file_with_offenses(self, tmp_path: Path) -> None:
         """Test linting a file with os.path usage."""
         test_file = tmp_path / "test.py"
         test_file.write_text("""import os.path
@@ -158,8 +158,15 @@ print(os.path.exists('test'))
         assert offenses[0] == (1, "import os.path")
         assert offenses[1] == (2, "print(os.path.exists('test'))")
 
-    def test_lint_file_with_syntax_error(self, tmp_path, capsys):
-        """Test linting a file with syntax errors."""
+    def test_lint_file_with_syntax_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Test linting a file with syntax errors.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+        """
         test_file = tmp_path / "test.py"
         test_file.write_text("import os.path\nif True\n    print('syntax error')")
 
@@ -169,8 +176,16 @@ print(os.path.exists('test'))
         captured = capsys.readouterr()
         assert "✗ Syntax error" in captured.err
 
-    def test_lint_file_unicode_error(self, tmp_path, capsys, monkeypatch):
-        """Test handling of unicode decode errors."""
+    def test_lint_file_unicode_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test handling of unicode decode errors.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         test_file = tmp_path / "test.py"
         test_file.write_bytes(b"\xff\xfe")  # Invalid UTF-8
 
@@ -180,7 +195,7 @@ print(os.path.exists('test'))
         captured = capsys.readouterr()
         assert "✗ Cannot read" in captured.err
 
-    def test_lint_nonexistent_file(self, capsys):
+    def test_lint_nonexistent_file(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Test linting a non-existent file."""
         offenses = lint_file(Path("/nonexistent/file.py"))
         assert len(offenses) == 0
@@ -192,7 +207,7 @@ print(os.path.exists('test'))
 class TestFindPythonFiles:
     """Test the enhanced file finding with smart exclusions."""
 
-    def test_exclude_common_dirs(self, tmp_path):
+    def test_exclude_common_dirs(self, tmp_path: Path) -> None:
         """Test auto-exclusion of __pycache__, venv, node_modules."""
         # Create directory structure
         (tmp_path / "main.py").write_text("print('main')")
@@ -217,7 +232,7 @@ class TestFindPythonFiles:
         assert "venv_file2.py" not in file_names
         assert "node.py" not in file_names
 
-    def test_custom_exclude_patterns(self, tmp_path):
+    def test_custom_exclude_patterns(self, tmp_path: Path) -> None:
         """Test custom exclusion patterns."""
         (tmp_path / "main.py").write_text("print('main')")
         (tmp_path / "test").mkdir()
@@ -229,7 +244,7 @@ class TestFindPythonFiles:
         assert "main.py" in file_names
         assert "test.py" not in file_names
 
-    def test_single_file_path(self, tmp_path):
+    def test_single_file_path(self, tmp_path: Path) -> None:
         """Test providing a single file path."""
         test_file = tmp_path / "single.py"
         test_file.write_text("print('single')")
@@ -238,7 +253,7 @@ class TestFindPythonFiles:
         assert len(files) == 1
         assert test_file in files
 
-    def test_non_python_file(self, tmp_path):
+    def test_non_python_file(self, tmp_path: Path) -> None:
         """Test that non-Python files are excluded."""
         (tmp_path / "test.txt").write_text("not python")
         (tmp_path / "test.py").write_text("python")
@@ -253,8 +268,16 @@ class TestFindPythonFiles:
 class TestMainCLI:
     """Test the enhanced main CLI function."""
 
-    def test_main_with_stats_flag(self, tmp_path, capsys, monkeypatch):
-        """Test --stats flag shows worst offenders."""
+    def test_main_with_stats_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test --stats flag shows worst offenders.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         # Create files with different numbers of offenses
         (tmp_path / "worst.py").write_text("""import os.path
 from os import path
@@ -277,8 +300,16 @@ x = os.path.exists('test')""")
         assert "Worst offenders:" in captured.out
         assert "worst.py" in captured.out
 
-    def test_main_with_aggressive_flag(self, tmp_path, capsys, monkeypatch):
-        """Test --aggressive flag shows aggressive message."""
+    def test_main_with_aggressive_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test --aggressive flag shows aggressive message.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         test_file = tmp_path / "test.py"
         test_file.write_text("import os.path")
 
@@ -291,8 +322,16 @@ x = os.path.exists('test')""")
         captured = capsys.readouterr()
         assert "⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️" in captured.out
 
-    def test_main_professional_output_format(self, tmp_path, capsys, monkeypatch):
-        """Test professional output format."""
+    def test_main_professional_output_format(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test professional output format.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         test_file = tmp_path / "test.py"
         test_file.write_text("""import os.path
 x = os.path.join('a', 'b')
@@ -315,8 +354,16 @@ def f(p: os.path.PathLike):
         assert "Total violations:" in captured.out
         assert "✗ Found os.path usage. Migrate to pathlib." in captured.out
 
-    def test_main_clean_files(self, tmp_path, capsys, monkeypatch):
-        """Test output when all files are clean."""
+    def test_main_clean_files(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test output when all files are clean.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         test_file = tmp_path / "test.py"
         test_file.write_text("from pathlib import Path\nprint(Path.cwd())")
 
@@ -330,8 +377,16 @@ def f(p: os.path.PathLike):
         assert "✓" in captured.out
         assert "no os.path usage found" in captured.out
 
-    def test_main_no_files_found(self, tmp_path, capsys, monkeypatch):
-        """Test when no Python files are found."""
+    def test_main_no_files_found(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test when no Python files are found.
+
+        Args:
+            tmp_path: Pytest fixture for temporary directory.
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         # Create empty directory
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
@@ -345,8 +400,15 @@ def f(p: os.path.PathLike):
         captured = capsys.readouterr()
         assert "No Python files found" in captured.out
 
-    def test_main_nonexistent_path_error(self, capsys, monkeypatch):
-        """Test error handling for non-existent paths."""
+    def test_main_nonexistent_path_error(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test error handling for non-existent paths.
+
+        Args:
+            capsys: Pytest fixture for capturing stdout/stderr.
+            monkeypatch: Pytest fixture for mocking.
+        """
         monkeypatch.setattr(sys, "argv", ["pathlint", "/nonexistent/path"])
 
         with pytest.raises(SystemExit) as exc_info:

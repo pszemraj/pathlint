@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Comprehensive test suite for pathlint auto-fixer."""
 
+from pathlib import Path
+
 from pathlint.autofix import REPLACEMENTS, add_pathlib_import, fix_file
 
 
 class TestAddPathlibImport:
     """Test the add_pathlib_import function."""
 
-    def test_add_import_to_file_with_no_imports(self):
+    def test_add_import_to_file_with_no_imports(self) -> None:
         """Add pathlib import to file with no existing imports."""
         content = "x = 5\ny = 10\n"
         result = add_pathlib_import(content)
@@ -15,7 +17,7 @@ class TestAddPathlibImport:
         lines = result.splitlines()
         assert lines[0] == "from pathlib import Path"
 
-    def test_add_import_after_existing_imports(self):
+    def test_add_import_after_existing_imports(self) -> None:
         """Add pathlib import after existing imports."""
         content = "import os\nimport sys\n\nx = 5\n"
         result = add_pathlib_import(content)
@@ -24,20 +26,20 @@ class TestAddPathlibImport:
         # Should be inserted after last import (line index 2)
         assert lines[2] == "from pathlib import Path"
 
-    def test_no_duplicate_import_from_pathlib(self):
+    def test_no_duplicate_import_from_pathlib(self) -> None:
         """Don't add import if pathlib already imported."""
         content = "from pathlib import Path\nimport os\n"
         result = add_pathlib_import(content)
         # Should not modify
         assert result == content
 
-    def test_no_duplicate_import_pathlib(self):
+    def test_no_duplicate_import_pathlib(self) -> None:
         """Don't add import if pathlib module imported."""
         content = "import pathlib\nimport os\n"
         result = add_pathlib_import(content)
         assert result == content
 
-    def test_multiline_imports(self):
+    def test_multiline_imports(self) -> None:
         """Handle files with from imports."""
         content = "from os import environ\nfrom sys import argv\n\nx = 1\n"
         result = add_pathlib_import(content)
@@ -50,7 +52,7 @@ class TestAddPathlibImport:
 class TestReplacementPatterns:
     """Test individual replacement patterns."""
 
-    def test_import_os_path_replacement(self):
+    def test_import_os_path_replacement(self) -> None:
         """Test 'import os.path' -> 'from pathlib import Path'."""
         pattern, replacement = REPLACEMENTS[0]
         assert pattern == r"^import os\.path$"
@@ -59,7 +61,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "import os.path", flags=re.MULTILINE)
         assert result == "from pathlib import Path"
 
-    def test_from_os_import_path_replacement(self):
+    def test_from_os_import_path_replacement(self) -> None:
         """Test 'from os import path' -> 'from pathlib import Path'."""
         pattern, replacement = REPLACEMENTS[1]
         import re
@@ -67,7 +69,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "from os import path", flags=re.MULTILINE)
         assert result == "from pathlib import Path"
 
-    def test_exists_replacement(self):
+    def test_exists_replacement(self) -> None:
         """Test os.path.exists() -> Path().exists()."""
         pattern, replacement = REPLACEMENTS[3]
         import re
@@ -75,7 +77,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.exists('test.txt')")
         assert result == "Path('test.txt').exists()"
 
-    def test_isfile_replacement(self):
+    def test_isfile_replacement(self) -> None:
         """Test os.path.isfile() -> Path().is_file()."""
         pattern, replacement = REPLACEMENTS[4]
         import re
@@ -83,7 +85,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, 'os.path.isfile("/tmp/test")')
         assert result == 'Path("/tmp/test").is_file()'
 
-    def test_isdir_replacement(self):
+    def test_isdir_replacement(self) -> None:
         """Test os.path.isdir() -> Path().is_dir()."""
         pattern, replacement = REPLACEMENTS[5]
         import re
@@ -91,7 +93,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.isdir(directory)")
         assert result == "Path(directory).is_dir()"
 
-    def test_basename_replacement(self):
+    def test_basename_replacement(self) -> None:
         """Test os.path.basename() -> Path().name."""
         pattern, replacement = REPLACEMENTS[7]
         import re
@@ -99,7 +101,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.basename(__file__)")
         assert result == "Path(__file__).name"
 
-    def test_dirname_replacement(self):
+    def test_dirname_replacement(self) -> None:
         """Test os.path.dirname() -> str(Path().parent)."""
         pattern, replacement = REPLACEMENTS[8]
         import re
@@ -107,7 +109,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.dirname(__file__)")
         assert result == "str(Path(__file__).parent)"
 
-    def test_join_two_args_replacement(self):
+    def test_join_two_args_replacement(self) -> None:
         """Test os.path.join(a, b) -> str(Path(a) / b)."""
         # This is the second join pattern (2 args)
         pattern, replacement = REPLACEMENTS[13]
@@ -116,7 +118,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.join('dir', 'file')")
         assert result == "str(Path('dir') / 'file')"
 
-    def test_join_three_args_replacement(self):
+    def test_join_three_args_replacement(self) -> None:
         """Test os.path.join(a, b, c) -> str(Path(a) / b / c)."""
         # This is the first join pattern (3 args) - needs to run before 2-arg
         pattern, replacement = REPLACEMENTS[12]
@@ -125,7 +127,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.join('a', 'b', 'c')")
         assert result == "str(Path('a') / 'b' / 'c')"
 
-    def test_abspath_replacement(self):
+    def test_abspath_replacement(self) -> None:
         """Test os.path.abspath() -> str(Path().resolve())."""
         pattern, replacement = REPLACEMENTS[9]
         import re
@@ -133,7 +135,7 @@ class TestReplacementPatterns:
         result = re.sub(pattern, replacement, "os.path.abspath('relative/path')")
         assert result == "str(Path('relative/path').resolve())"
 
-    def test_aliased_path_exists(self):
+    def test_aliased_path_exists(self) -> None:
         """Test path.exists() after 'from os import path'."""
         pattern, replacement = REPLACEMENTS[16]
         import re
@@ -145,7 +147,7 @@ class TestReplacementPatterns:
 class TestFixFileBasic:
     """Test basic fix_file functionality."""
 
-    def test_fix_simple_os_path_exists(self, tmp_path):
+    def test_fix_simple_os_path_exists(self, tmp_path: Path) -> None:
         """Fix a simple os.path.exists call."""
         test_file = tmp_path / "test.py"
         test_file.write_text("import os.path\nif os.path.exists('file'):\n    pass\n")
@@ -158,7 +160,7 @@ class TestFixFileBasic:
         assert "Path('file').exists()" in result
         assert "os.path" not in result
 
-    def test_fix_multiple_replacements(self, tmp_path):
+    def test_fix_multiple_replacements(self, tmp_path: Path) -> None:
         """Fix file with multiple os.path calls."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -176,7 +178,7 @@ class TestFixFileBasic:
         assert "Path('b').is_file()" in result
         assert "str(Path('c') / 'd')" in result
 
-    def test_dry_run_no_modification(self, tmp_path):
+    def test_dry_run_no_modification(self, tmp_path: Path) -> None:
         """Dry-run should not modify file."""
         test_file = tmp_path / "test.py"
         original = "import os.path\nif os.path.exists('file'):\n    pass\n"
@@ -188,7 +190,7 @@ class TestFixFileBasic:
         # File should be unchanged
         assert test_file.read_text() == original
 
-    def test_no_changes_needed(self, tmp_path):
+    def test_no_changes_needed(self, tmp_path: Path) -> None:
         """File with no os.path usage should return 0."""
         test_file = tmp_path / "test.py"
         test_file.write_text("from pathlib import Path\nPath('file').exists()\n")
@@ -196,7 +198,7 @@ class TestFixFileBasic:
         count = fix_file(test_file, dry_run=False)
         assert count == 0
 
-    def test_invalid_file(self, tmp_path):
+    def test_invalid_file(self, tmp_path: Path) -> None:
         """Non-existent file should return 0."""
         test_file = tmp_path / "nonexistent.py"
         count = fix_file(test_file, dry_run=False)
@@ -206,7 +208,7 @@ class TestFixFileBasic:
 class TestFixFileComplex:
     """Test complex real-world scenarios."""
 
-    def test_from_os_import_path_conversion(self, tmp_path):
+    def test_from_os_import_path_conversion(self, tmp_path: Path) -> None:
         """Convert 'from os import path' usage."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -225,7 +227,7 @@ class TestFixFileComplex:
         assert "str(Path('a') / 'b')" in result
         assert "Path('test').name" in result
 
-    def test_mixed_os_path_calls(self, tmp_path):
+    def test_mixed_os_path_calls(self, tmp_path: Path) -> None:
         """Test file with various os.path functions."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -248,7 +250,7 @@ class TestFixFileComplex:
         assert "str(Path(filepath).parent)" in result
         assert "str(Path(filepath).resolve())" in result
 
-    def test_preserves_code_structure(self, tmp_path):
+    def test_preserves_code_structure(self, tmp_path: Path) -> None:
         """Ensure code structure is preserved."""
         test_file = tmp_path / "test.py"
         original = (
@@ -274,7 +276,7 @@ class TestFixFileComplex:
         assert "def foo():" in result
         assert "class Bar:" in result
 
-    def test_nested_os_path_calls(self, tmp_path):
+    def test_nested_os_path_calls(self, tmp_path: Path) -> None:
         """Test nested os.path function calls."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -288,7 +290,7 @@ class TestFixFileComplex:
         # Should handle nested calls (may not be perfect due to regex limitations)
         assert "Path" in result
 
-    def test_three_arg_join(self, tmp_path):
+    def test_three_arg_join(self, tmp_path: Path) -> None:
         """Test os.path.join with 3 arguments."""
         test_file = tmp_path / "test.py"
         test_file.write_text("import os.path\npath = os.path.join('root', 'subdir', 'file.txt')\n")
@@ -299,7 +301,7 @@ class TestFixFileComplex:
         result = test_file.read_text()
         assert "str(Path('root') / 'subdir' / 'file.txt')" in result
 
-    def test_multiple_imports(self, tmp_path):
+    def test_multiple_imports(self, tmp_path: Path) -> None:
         """File with multiple imports should add pathlib correctly."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -324,7 +326,7 @@ class TestFixFileComplex:
 class TestFixFileEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_file_with_syntax_error(self, tmp_path):
+    def test_file_with_syntax_error(self, tmp_path: Path) -> None:
         """Handle files with syntax errors gracefully."""
         test_file = tmp_path / "broken.py"
         test_file.write_text("import os.path\nif os.path.exists(  # missing closing")
@@ -334,7 +336,7 @@ class TestFixFileEdgeCases:
         # Regex replacements may still work despite syntax errors
         assert count >= 0
 
-    def test_unicode_content(self, tmp_path):
+    def test_unicode_content(self, tmp_path: Path) -> None:
         """Handle files with unicode content."""
         test_file = tmp_path / "unicode.py"
         test_file.write_text(
@@ -352,7 +354,7 @@ class TestFixFileEdgeCases:
         assert "Path('файл').exists()" in result
         assert "🐍" in result
 
-    def test_already_using_pathlib(self, tmp_path):
+    def test_already_using_pathlib(self, tmp_path: Path) -> None:
         """File already using pathlib shouldn't be modified."""
         test_file = tmp_path / "clean.py"
         clean_code = (
@@ -364,7 +366,7 @@ class TestFixFileEdgeCases:
         assert count == 0
         assert test_file.read_text() == clean_code
 
-    def test_mixed_pathlib_and_os_path(self, tmp_path):
+    def test_mixed_pathlib_and_os_path(self, tmp_path: Path) -> None:
         """File mixing both should convert os.path parts."""
         test_file = tmp_path / "mixed.py"
         test_file.write_text(
@@ -387,7 +389,7 @@ class TestFixFileEdgeCases:
 class TestReplacementOrder:
     """Test that replacement order handles edge cases correctly."""
 
-    def test_three_arg_join_before_two_arg(self, tmp_path):
+    def test_three_arg_join_before_two_arg(self, tmp_path: Path) -> None:
         """Ensure 3-arg join is replaced before 2-arg join."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
@@ -402,7 +404,7 @@ class TestReplacementOrder:
         # 3-arg join
         assert "str(Path('x') / 'y' / 'z')" in result
 
-    def test_import_replacement_comprehensive(self, tmp_path):
+    def test_import_replacement_comprehensive(self, tmp_path: Path) -> None:
         """Test all import replacement patterns."""
         test_file = tmp_path / "imports.py"
         test_file.write_text("from os.path import join, exists, dirname\n")
