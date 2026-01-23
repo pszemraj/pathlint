@@ -1,7 +1,5 @@
 # pathlint
 
-[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://pypi.org/project/pathlint/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/pathlint.svg)](https://pypi.org/project/pathlint/)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 
@@ -119,11 +117,13 @@ def get_path() -> os.path.PathLike:
 ## Output Format
 
 ### Clean Files
+
 ```
 ✓ 42 files checked - no os.path usage found!
 ```
 
 ### Files with Issues
+
 ```
 /path/to/file.py
   L   1: import os.path
@@ -139,6 +139,7 @@ Total violations:  7
 ```
 
 ### With Statistics (`--stats`)
+
 ```
 Worst offenders:
    12 - legacy_utils.py
@@ -155,12 +156,14 @@ Worst offenders:
 ## Performance
 
 Optimized for speed with:
+
 - Early termination for files without 'os' or 'path' strings
 - Smart directory traversal with automatic exclusions
 - Single-pass AST visitor
 - Automatic deduplication of findings
 
 Benchmarks on real codebases:
+
 ```
 100 files: 0.31s (vs 0.84s traditional)
 500 files: 1.1s (vs 4.2s traditional)
@@ -182,6 +185,7 @@ pathlint --fix src/
 ```
 
 Supports migration of:
+
 - Import statements
 - Common function calls (`exists`, `join`, `dirname`, etc.)
 - Path attributes
@@ -208,6 +212,7 @@ ruff check --fix .
 ## Why Pathlib?
 
 `pathlib` provides:
+
 - Object-oriented interface
 - Operator overloading (`/` for joining paths)
 - Cross-platform compatibility
@@ -239,6 +244,7 @@ MIT License - see LICENSE.txt
 ## Contributing
 
 Contributions welcome! Please ensure:
+
 1. Tests pass: `pytest`
 2. Code is formatted: `ruff format .`
 3. No linting errors: `ruff check .`

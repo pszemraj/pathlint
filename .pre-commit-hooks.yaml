@@ -3,7 +3,7 @@
   description: 'Fast linter to detect os.path usage and encourage pathlib adoption'
   entry: pathlint
   language: python
-  types: [python]
+  types: [ python ]
   pass_filenames: true
   require_serial: false
   minimum_pre_commit_version: '2.9.2'
@@ -13,7 +13,7 @@
   description: 'Automatically convert os.path to pathlib'
   entry: pathlint --fix
   language: python
-  types: [python]
+  types: [ python ]
   pass_filenames: true
   require_serial: true
   minimum_pre_commit_version: '2.9.2'
