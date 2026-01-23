@@ -23,5 +23,5 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - run: |
-        pip install -e .[test]
+        pip install -e .[dev]
         pytest

@@ -197,7 +197,7 @@ Supports migration of:
 
 ```bash
 # Install with dev dependencies
-pip install -e .[dev,test]
+pip install -e .[dev]
 
 # Run tests
 pytest
