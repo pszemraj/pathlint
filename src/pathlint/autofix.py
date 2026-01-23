@@ -39,7 +39,14 @@ REPLACEMENTS: list[tuple[str, str]] = [
 
 
 def add_pathlib_import(content: str) -> str:
-    """Add pathlib import if not already present."""
+    """Add pathlib import if not already present.
+
+    Args:
+        content: File content as string.
+
+    Returns:
+        Modified content with pathlib import added.
+    """
     if "from pathlib import" not in content and "import pathlib" not in content:
         lines = content.splitlines()
         # Find the last import line
@@ -60,8 +67,11 @@ def add_pathlib_import(content: str) -> str:
 
 
 def fix_file(filepath: Path, dry_run: bool = False) -> int:
-    """
-    Apply auto-fixes to a Python file.
+    """Apply auto-fixes to a Python file.
+
+    Args:
+        filepath: Path to the Python file to fix.
+        dry_run: If True, show changes without modifying the file.
 
     Returns:
         Number of replacements made.
