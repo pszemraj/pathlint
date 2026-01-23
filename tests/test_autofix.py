@@ -3,11 +3,17 @@
 
 from pathlib import Path
 
-from pathlint.autofix import REPLACEMENTS, _replace_join_calls, add_pathlib_import, fix_file
+from pathlint.autofix import (
+    IMPORT_REPLACEMENTS,
+    REPLACEMENTS,
+    _replace_join_calls,
+    add_pathlib_import,
+    fix_file,
+)
 
 
 def _get_replacement(pattern: str) -> tuple[str, str]:
-    for item in REPLACEMENTS:
+    for item in IMPORT_REPLACEMENTS + REPLACEMENTS:
         if item[0] == pattern:
             return item
     raise AssertionError(f"Pattern not found: {pattern}")
@@ -117,19 +123,19 @@ class TestReplacementPatterns:
         assert result == "str(Path(__file__).parent)"
 
     def test_join_two_args_replacement(self) -> None:
-        """Test os.path.join(a, b) -> str(Path(a) / b)."""
+        """Test os.path.join(a, b) -> str(Path(a, b))."""
         result, count = _replace_join_calls("os.path.join('dir', 'file')", "os.path.join(")
         assert count == 1
-        assert result == "str(Path('dir') / 'file')"
+        assert result == "str(Path('dir', 'file'))"
 
     def test_join_three_args_replacement(self) -> None:
-        """Test os.path.join(a, b, c) -> str(Path(a) / b / c)."""
+        """Test os.path.join(a, b, c) -> str(Path(a, b, c))."""
         result, count = _replace_join_calls(
             "os.path.join('a', 'b', 'c')",
             "os.path.join(",
         )
         assert count == 1
-        assert result == "str(Path('a') / 'b' / 'c')"
+        assert result == "str(Path('a', 'b', 'c'))"
 
     def test_abspath_replacement(self) -> None:
         """Test os.path.abspath() -> str(Path().resolve())."""
@@ -180,7 +186,7 @@ class TestFixFileBasic:
         result = test_file.read_text()
         assert "Path('a').exists()" in result
         assert "Path('b').is_file()" in result
-        assert "str(Path('c') / 'd')" in result
+        assert "str(Path('c', 'd'))" in result
 
     def test_dry_run_no_modification(self, tmp_path: Path) -> None:
         """Dry-run should not modify file."""
@@ -228,7 +234,7 @@ class TestFixFileComplex:
         result = test_file.read_text()
         assert "from pathlib import Path" in result
         assert "Path('file').exists()" in result
-        assert "str(Path('a') / 'b')" in result
+        assert "str(Path('a', 'b'))" in result
         assert "Path('test').name" in result
 
     def test_mixed_os_path_calls(self, tmp_path: Path) -> None:
@@ -303,7 +309,7 @@ class TestFixFileComplex:
         assert count == 2
 
         result = test_file.read_text()
-        assert "str(Path('root') / 'subdir' / 'file.txt')" in result
+        assert "str(Path('root', 'subdir', 'file.txt'))" in result
 
     def test_multiple_imports(self, tmp_path: Path) -> None:
         """File with multiple imports should add pathlib correctly."""
@@ -361,7 +367,97 @@ class TestFixFileEdgeCases:
 
         result = test_file.read_text()
         assert "os.path.join" not in result
-        assert "str(Path('root') / 'subdir' / 'file.txt')" in result
+        assert "str(Path(" in result
+        assert "'root'" in result
+        assert "'subdir'" in result
+        assert "'file.txt'" in result
+
+    def test_multiline_join_call_with_comment(self, tmp_path: Path) -> None:
+        """Inline comments inside join args should not break parsing."""
+        test_file = tmp_path / "multiline_join_comment.py"
+        test_file.write_text(
+            "import os.path\n"
+            "result = os.path.join(\n"
+            "    'root',  # ) should not end the call\n"
+            "    'subdir',\n"
+            "    'file.txt',\n"
+            ")\n"
+        )
+
+        count = fix_file(test_file, dry_run=False)
+        assert count >= 2
+
+        result = test_file.read_text()
+        assert "os.path.join" not in result
+        assert "str(Path(" in result
+        assert "'root'" in result
+        assert "'subdir'" in result
+        assert "'file.txt'" in result
+        assert "# ) should not end the call" in result
+
+    def test_join_ignores_comment(self, tmp_path: Path) -> None:
+        """Join calls inside comments should not be modified."""
+        test_file = tmp_path / "comment.py"
+        test_file.write_text(
+            "import os.path\n# os.path.join('a', 'b')\npath = os.path.join('a', 'b')\n"
+        )
+
+        fix_file(test_file, dry_run=False)
+        result = test_file.read_text()
+        assert "# os.path.join('a', 'b')" in result
+        assert "str(Path('a', 'b'))" in result
+
+    def test_join_ignores_string_literal(self, tmp_path: Path) -> None:
+        """Join calls inside string literals should not be modified."""
+        test_file = tmp_path / "string_literal.py"
+        test_file.write_text(
+            "import os.path\ntext = \"os.path.join('a', 'b')\"\npath = os.path.join('a', 'b')\n"
+        )
+
+        fix_file(test_file, dry_run=False)
+        result = test_file.read_text()
+        assert "text = \"os.path.join('a', 'b')\"" in result
+        assert "str(Path('a', 'b'))" in result
+
+    def test_join_ignores_fstring_literal(self, tmp_path: Path) -> None:
+        """Join calls inside f-strings should not be modified."""
+        test_file = tmp_path / "fstring_literal.py"
+        test_file.write_text("import os.path\nvalue = f\"{os.path.join('a', 'b')}\"\n")
+
+        count = fix_file(test_file, dry_run=False)
+        assert count == 0
+        result = test_file.read_text()
+        assert "os.path.join('a', 'b')" in result
+        assert "import os.path" in result
+
+    def test_join_with_nested_commas(self, tmp_path: Path) -> None:
+        """Nested commas inside args should not break parsing."""
+        test_file = tmp_path / "nested_commas.py"
+        test_file.write_text(
+            "import os.path\npath = os.path.join('a', func('b', 'c'), ['d', 'e'][0])\n"
+        )
+
+        fix_file(test_file, dry_run=False)
+        result = test_file.read_text()
+        assert "str(Path('a', func('b', 'c'), ['d', 'e'][0]))" in result
+
+    def test_join_with_trailing_comma(self, tmp_path: Path) -> None:
+        """Trailing commas in join args should be preserved."""
+        test_file = tmp_path / "trailing_comma.py"
+        test_file.write_text("import os.path\npath = os.path.join('a', 'b',)\n")
+
+        fix_file(test_file, dry_run=False)
+        result = test_file.read_text()
+        assert "str(Path('a', 'b',))" in result
+
+    def test_join_with_star_args(self, tmp_path: Path) -> None:
+        """Star-args should be preserved in replacements."""
+        test_file = tmp_path / "star_args.py"
+        test_file.write_text("import os.path\npath = os.path.join(root, *parts)\n")
+
+        fix_file(test_file, dry_run=False)
+        result = test_file.read_text()
+        assert "str(Path(root, *parts))" in result
 
     def test_file_with_syntax_error(self, tmp_path: Path) -> None:
         """Handle files with syntax errors gracefully."""
@@ -427,7 +523,7 @@ class TestReplacementOrder:
     """Test that replacement order handles edge cases correctly."""
 
     def test_three_arg_join_before_two_arg(self, tmp_path: Path) -> None:
-        """Ensure 3-arg join is replaced before 2-arg join."""
+        """Ensure multiple join calls are replaced correctly."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
             "import os.path\na = os.path.join('x', 'y')\nb = os.path.join('x', 'y', 'z')\n"
@@ -437,9 +533,9 @@ class TestReplacementOrder:
         result = test_file.read_text()
 
         # 2-arg join
-        assert "str(Path('x') / 'y')" in result
+        assert "str(Path('x', 'y'))" in result
         # 3-arg join
-        assert "str(Path('x') / 'y' / 'z')" in result
+        assert "str(Path('x', 'y', 'z'))" in result
 
     def test_import_replacement_comprehensive(self, tmp_path: Path) -> None:
         """Test all import replacement patterns."""

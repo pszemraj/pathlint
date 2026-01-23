@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Optional
 
 # Common os.path to pathlib replacements
-REPLACEMENTS: list[tuple[str, str]] = [
-    # Import statements
+IMPORT_REPLACEMENTS: list[tuple[str, str]] = [
     (r"^import os\.path$", "from pathlib import Path"),
     (r"^from os import path$", "from pathlib import Path"),
     (r"^from os\.path import (.+)$", "from pathlib import Path"),
+]
+
+REPLACEMENTS: list[tuple[str, str]] = [
     # Function replacements (allow multiline arguments)
     (r"os\.path\.exists\(([^)]+)\)", r"Path(\1).exists()"),
     (r"os\.path\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
@@ -59,6 +61,29 @@ def _consume_string(text: str, start: int) -> int:
     return i
 
 
+def _consume_comment(text: str, start: int) -> int:
+    """Return index just after a line comment starting at `start`."""
+    end = text.find("\n", start)
+    return len(text) if end == -1 else end + 1
+
+
+def _string_start_at(text: str, start: int) -> Optional[tuple[int, int]]:
+    """Return (prefix_start, quote_index) if a string literal starts at `start`."""
+    if start >= len(text):
+        return None
+    prefix_chars = "rRbBuUfF"
+    i = start
+    while i < len(text) and text[i] in prefix_chars:
+        i += 1
+    if i < len(text) and text[i] in ("'", '"'):
+        if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+            return None
+        return start, i
+    if text[start] in ("'", '"'):
+        return start, start
+    return None
+
+
 def _find_matching_paren(text: str, start: int) -> Optional[int]:
     """Find the closing parenthesis index for the call starting at `start`."""
     depth = 0
@@ -67,6 +92,9 @@ def _find_matching_paren(text: str, start: int) -> Optional[int]:
         ch = text[i]
         if ch in ("'", '"'):
             i = _consume_string(text, i)
+            continue
+        if ch == "#":
+            i = _consume_comment(text, i)
             continue
         if ch in "([{":
             depth += 1
@@ -79,61 +107,47 @@ def _find_matching_paren(text: str, start: int) -> Optional[int]:
     return None
 
 
-def _split_args(arg_str: str) -> list[str]:
-    """Split a comma-separated argument string, respecting nesting and strings."""
-    args: list[str] = []
-    current: list[str] = []
-    depth = 0
-    i = 0
-    while i < len(arg_str):
-        ch = arg_str[i]
-        if ch in ("'", '"'):
-            end = _consume_string(arg_str, i)
-            current.append(arg_str[i:end])
-            i = end
-            continue
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}" and depth > 0:
-            depth -= 1
-        if ch == "," and depth == 0:
-            args.append("".join(current))
-            current = []
-            i += 1
-            continue
-        current.append(ch)
-        i += 1
-    if current:
-        args.append("".join(current))
-    return args
-
-
 def _replace_join_calls(content: str, prefix: str) -> tuple[str, int]:
-    """Replace join calls for a given prefix and return updated content and count."""
+    """Replace join calls for a given prefix and return updated content and count.
+
+    Notes:
+        - Skips matches inside string literals (including f-strings) and comments.
+    """
     count = 0
     idx = 0
     prefix_len = len(prefix)
-    while True:
-        idx = content.find(prefix, idx)
-        if idx == -1:
-            break
-        start = idx + prefix_len
-        end = _find_matching_paren(content, start)
-        if end is None:
-            break
-        args_str = content[start:end]
-        args = [arg.strip() for arg in _split_args(args_str) if arg.strip()]
-        if len(args) >= 2:
-            replacement = "str(Path(" + args[0] + ")"
-            for arg in args[1:]:
-                replacement += " / " + arg
-            replacement += ")"
-            content = content[:idx] + replacement + content[end + 1 :]
-            idx += len(replacement)
-            count += 1
-        else:
+    pieces: list[str] = []
+
+    while idx < len(content):
+        string_start = _string_start_at(content, idx)
+        if string_start is not None:
+            start, quote_idx = string_start
+            end = _consume_string(content, quote_idx)
+            pieces.append(content[start:end])
+            idx = end
+            continue
+        if content[idx] == "#":
+            end = _consume_comment(content, idx)
+            pieces.append(content[idx:end])
+            idx = end
+            continue
+        if content.startswith(prefix, idx) and (
+            idx == 0 or not (content[idx - 1].isalnum() or content[idx - 1] in "._")
+        ):
+            start = idx + prefix_len
+            end = _find_matching_paren(content, start)
+            if end is None:
+                pieces.append(content[idx:])
+                break
+            args_str = content[start:end]
+            replacement = "str(Path(" + args_str + "))"
+            pieces.append(replacement)
             idx = end + 1
-    return content, count
+            count += 1
+            continue
+        pieces.append(content[idx])
+        idx += 1
+    return "".join(pieces), count
 
 
 def add_pathlib_import(content: str) -> str:
@@ -195,6 +209,19 @@ def fix_file(filepath: Path, dry_run: bool = False) -> int:
         if count > 0:
             content = new_content
             total_replacements += count
+
+    # Replace import statements only if no os.path usage remains outside imports.
+    content_no_imports = "\n".join(
+        line
+        for line in content.splitlines()
+        if not re.match(r"^\s*(import os\.path|from os import path|from os\.path import )", line)
+    )
+    if "os.path" not in content_no_imports and "path." not in content_no_imports:
+        for pattern, replacement in IMPORT_REPLACEMENTS:
+            new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
+            if count > 0:
+                content = new_content
+                total_replacements += count
 
     # Add pathlib import if we made replacements
     if total_replacements > 0 and "Path(" in content:
