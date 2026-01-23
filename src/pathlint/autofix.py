@@ -5,6 +5,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Common os.path to pathlib replacements
 REPLACEMENTS: list[tuple[str, str]] = [
@@ -12,30 +13,123 @@ REPLACEMENTS: list[tuple[str, str]] = [
     (r"^import os\.path$", "from pathlib import Path"),
     (r"^from os import path$", "from pathlib import Path"),
     (r"^from os\.path import (.+)$", "from pathlib import Path"),
-    # Function replacements (use [^)\n]+ to avoid matching across lines)
-    (r"os\.path\.exists\(([^)\n]+)\)", r"Path(\1).exists()"),
-    (r"os\.path\.isfile\(([^)\n]+)\)", r"Path(\1).is_file()"),
-    (r"os\.path\.isdir\(([^)\n]+)\)", r"Path(\1).is_dir()"),
-    (r"os\.path\.isabs\(([^)\n]+)\)", r"Path(\1).is_absolute()"),
-    (r"os\.path\.basename\(([^)\n]+)\)", r"Path(\1).name"),
-    (r"os\.path\.dirname\(([^)\n]+)\)", r"str(Path(\1).parent)"),
-    (r"os\.path\.abspath\(([^)\n]+)\)", r"str(Path(\1).resolve())"),
-    (r"os\.path\.expanduser\(([^)\n]+)\)", r"str(Path(\1).expanduser())"),
-    (r"os\.path\.splitext\(([^)\n]+)\)", r"(Path(\1).stem, Path(\1).suffix)"),
-    # Join patterns - handle 2 and 3 arguments (use [^,\n]+ to avoid matching across lines)
-    (r"os\.path\.join\(([^,\n]+),\s*([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2 / \3)"),
-    (r"os\.path\.join\(([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2)"),
+    # Function replacements (allow multiline arguments)
+    (r"os\.path\.exists\(([^)]+)\)", r"Path(\1).exists()"),
+    (r"os\.path\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
+    (r"os\.path\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
+    (r"os\.path\.isabs\(([^)]+)\)", r"Path(\1).is_absolute()"),
+    (r"os\.path\.basename\(([^)]+)\)", r"Path(\1).name"),
+    (r"os\.path\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
+    (r"os\.path\.abspath\(([^)]+)\)", r"str(Path(\1).resolve())"),
+    (r"os\.path\.expanduser\(([^)]+)\)", r"str(Path(\1).expanduser())"),
+    (r"os\.path\.splitext\(([^)]+)\)", r"(Path(\1).stem, Path(\1).suffix)"),
     # Path attributes
     (r"os\.path\.sep", 'Path.sep if hasattr(Path, "sep") else "/"'),
     (r"os\.path\.pathsep", 'Path.pathsep if hasattr(Path, "pathsep") else ":"'),
     # Handle 'from os import path' usage
-    (r"\bpath\.exists\(([^)\n]+)\)", r"Path(\1).exists()"),
-    (r"\bpath\.isfile\(([^)\n]+)\)", r"Path(\1).is_file()"),
-    (r"\bpath\.isdir\(([^)\n]+)\)", r"Path(\1).is_dir()"),
-    (r"\bpath\.join\(([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2)"),
-    (r"\bpath\.basename\(([^)\n]+)\)", r"Path(\1).name"),
-    (r"\bpath\.dirname\(([^)\n]+)\)", r"str(Path(\1).parent)"),
+    (r"\bpath\.exists\(([^)]+)\)", r"Path(\1).exists()"),
+    (r"\bpath\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
+    (r"\bpath\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
+    (r"\bpath\.basename\(([^)]+)\)", r"Path(\1).name"),
+    (r"\bpath\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
 ]
+
+
+def _consume_string(text: str, start: int) -> int:
+    quote = text[start]
+    if text[start : start + 3] == quote * 3:
+        i = start + 3
+        while i < len(text):
+            if text[i : i + 3] == quote * 3:
+                return i + 3
+            if text[i] == "\\":
+                i += 2
+            else:
+                i += 1
+        return i
+    i = start + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == quote:
+            return i + 1
+        else:
+            i += 1
+    return i
+
+
+def _find_matching_paren(text: str, start: int) -> Optional[int]:
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch in ("'", '"'):
+            i = _consume_string(text, i)
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0 and ch == ")":
+                return i
+            if depth > 0:
+                depth -= 1
+        i += 1
+    return None
+
+
+def _split_args(arg_str: str) -> list[str]:
+    args: list[str] = []
+    current: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(arg_str):
+        ch = arg_str[i]
+        if ch in ("'", '"'):
+            end = _consume_string(arg_str, i)
+            current.append(arg_str[i:end])
+            i = end
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        if ch == "," and depth == 0:
+            args.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    if current:
+        args.append("".join(current))
+    return args
+
+
+def _replace_join_calls(content: str, prefix: str) -> tuple[str, int]:
+    count = 0
+    idx = 0
+    prefix_len = len(prefix)
+    while True:
+        idx = content.find(prefix, idx)
+        if idx == -1:
+            break
+        start = idx + prefix_len
+        end = _find_matching_paren(content, start)
+        if end is None:
+            break
+        args_str = content[start:end]
+        args = [arg.strip() for arg in _split_args(args_str) if arg.strip()]
+        if len(args) >= 2:
+            replacement = "str(Path(" + args[0] + ")"
+            for arg in args[1:]:
+                replacement += " / " + arg
+            replacement += ")"
+            content = content[:idx] + replacement + content[end + 1 :]
+            idx += len(replacement)
+            count += 1
+        else:
+            idx = end + 1
+    return content, count
 
 
 def add_pathlib_import(content: str) -> str:
@@ -84,6 +178,12 @@ def fix_file(filepath: Path, dry_run: bool = False) -> int:
 
     content = original_content
     total_replacements = 0
+
+    # Replace os.path.join/path.join with a simple parser to handle multiline calls.
+    content, count = _replace_join_calls(content, "os.path.join(")
+    total_replacements += count
+    content, count = _replace_join_calls(content, "path.join(")
+    total_replacements += count
 
     # Apply each replacement pattern
     for pattern, replacement in REPLACEMENTS:

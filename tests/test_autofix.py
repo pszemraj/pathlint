@@ -3,7 +3,14 @@
 
 from pathlib import Path
 
-from pathlint.autofix import REPLACEMENTS, add_pathlib_import, fix_file
+from pathlint.autofix import REPLACEMENTS, _replace_join_calls, add_pathlib_import, fix_file
+
+
+def _get_replacement(pattern: str) -> tuple[str, str]:
+    for item in REPLACEMENTS:
+        if item[0] == pattern:
+            return item
+    raise AssertionError(f"Pattern not found: {pattern}")
 
 
 class TestAddPathlibImport:
@@ -54,7 +61,7 @@ class TestReplacementPatterns:
 
     def test_import_os_path_replacement(self) -> None:
         """Test 'import os.path' -> 'from pathlib import Path'."""
-        pattern, replacement = REPLACEMENTS[0]
+        pattern, replacement = _get_replacement(r"^import os\.path$")
         assert pattern == r"^import os\.path$"
         import re
 
@@ -63,7 +70,7 @@ class TestReplacementPatterns:
 
     def test_from_os_import_path_replacement(self) -> None:
         """Test 'from os import path' -> 'from pathlib import Path'."""
-        pattern, replacement = REPLACEMENTS[1]
+        pattern, replacement = _get_replacement(r"^from os import path$")
         import re
 
         result = re.sub(pattern, replacement, "from os import path", flags=re.MULTILINE)
@@ -71,7 +78,7 @@ class TestReplacementPatterns:
 
     def test_exists_replacement(self) -> None:
         """Test os.path.exists() -> Path().exists()."""
-        pattern, replacement = REPLACEMENTS[3]
+        pattern, replacement = _get_replacement(r"os\.path\.exists\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "os.path.exists('test.txt')")
@@ -79,7 +86,7 @@ class TestReplacementPatterns:
 
     def test_isfile_replacement(self) -> None:
         """Test os.path.isfile() -> Path().is_file()."""
-        pattern, replacement = REPLACEMENTS[4]
+        pattern, replacement = _get_replacement(r"os\.path\.isfile\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, 'os.path.isfile("/tmp/test")')
@@ -87,7 +94,7 @@ class TestReplacementPatterns:
 
     def test_isdir_replacement(self) -> None:
         """Test os.path.isdir() -> Path().is_dir()."""
-        pattern, replacement = REPLACEMENTS[5]
+        pattern, replacement = _get_replacement(r"os\.path\.isdir\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "os.path.isdir(directory)")
@@ -95,7 +102,7 @@ class TestReplacementPatterns:
 
     def test_basename_replacement(self) -> None:
         """Test os.path.basename() -> Path().name."""
-        pattern, replacement = REPLACEMENTS[7]
+        pattern, replacement = _get_replacement(r"os\.path\.basename\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "os.path.basename(__file__)")
@@ -103,7 +110,7 @@ class TestReplacementPatterns:
 
     def test_dirname_replacement(self) -> None:
         """Test os.path.dirname() -> str(Path().parent)."""
-        pattern, replacement = REPLACEMENTS[8]
+        pattern, replacement = _get_replacement(r"os\.path\.dirname\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "os.path.dirname(__file__)")
@@ -111,25 +118,22 @@ class TestReplacementPatterns:
 
     def test_join_two_args_replacement(self) -> None:
         """Test os.path.join(a, b) -> str(Path(a) / b)."""
-        # This is the second join pattern (2 args)
-        pattern, replacement = REPLACEMENTS[13]
-        import re
-
-        result = re.sub(pattern, replacement, "os.path.join('dir', 'file')")
+        result, count = _replace_join_calls("os.path.join('dir', 'file')", "os.path.join(")
+        assert count == 1
         assert result == "str(Path('dir') / 'file')"
 
     def test_join_three_args_replacement(self) -> None:
         """Test os.path.join(a, b, c) -> str(Path(a) / b / c)."""
-        # This is the first join pattern (3 args) - needs to run before 2-arg
-        pattern, replacement = REPLACEMENTS[12]
-        import re
-
-        result = re.sub(pattern, replacement, "os.path.join('a', 'b', 'c')")
+        result, count = _replace_join_calls(
+            "os.path.join('a', 'b', 'c')",
+            "os.path.join(",
+        )
+        assert count == 1
         assert result == "str(Path('a') / 'b' / 'c')"
 
     def test_abspath_replacement(self) -> None:
         """Test os.path.abspath() -> str(Path().resolve())."""
-        pattern, replacement = REPLACEMENTS[9]
+        pattern, replacement = _get_replacement(r"os\.path\.abspath\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "os.path.abspath('relative/path')")
@@ -137,7 +141,7 @@ class TestReplacementPatterns:
 
     def test_aliased_path_exists(self) -> None:
         """Test path.exists() after 'from os import path'."""
-        pattern, replacement = REPLACEMENTS[16]
+        pattern, replacement = _get_replacement(r"\bpath\.exists\(([^)]+)\)")
         import re
 
         result = re.sub(pattern, replacement, "path.exists('file.txt')")
@@ -325,6 +329,41 @@ class TestFixFileComplex:
 
 class TestFixFileEdgeCases:
     """Test edge cases and error handling."""
+
+    def test_multiline_os_path_call(self, tmp_path: Path) -> None:
+        """Multiline os.path calls should be auto-fixed."""
+        test_file = tmp_path / "multiline.py"
+        test_file.write_text(
+            "import os.path\n" "result = os.path.exists(\n" "    'test.txt'\n" ")\n"
+        )
+
+        count = fix_file(test_file, dry_run=False)
+        assert count >= 2
+
+        result = test_file.read_text()
+        assert "os.path.exists" not in result
+        assert "from pathlib import Path" in result
+        assert "Path(" in result
+        assert ").exists()" in result
+
+    def test_multiline_join_call(self, tmp_path: Path) -> None:
+        """Multiline os.path.join calls should be auto-fixed."""
+        test_file = tmp_path / "multiline_join.py"
+        test_file.write_text(
+            "import os.path\n"
+            "result = os.path.join(\n"
+            "    'root',\n"
+            "    'subdir',\n"
+            "    'file.txt',\n"
+            ")\n"
+        )
+
+        count = fix_file(test_file, dry_run=False)
+        assert count >= 2
+
+        result = test_file.read_text()
+        assert "os.path.join" not in result
+        assert "str(Path('root') / 'subdir' / 'file.txt')" in result
 
     def test_file_with_syntax_error(self, tmp_path: Path) -> None:
         """Handle files with syntax errors gracefully."""
