@@ -6,17 +6,17 @@ import ast
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 
 class OSPathDetector(ast.NodeVisitor):
     """Single-pass AST visitor that catches ALL os.path usage patterns."""
 
-    def __init__(self, lines: List[str]) -> None:
-        self.offenses: Dict[int, Set[str]] = defaultdict(set)  # Dedupes automatically
+    def __init__(self, lines: list[str]) -> None:
+        self.offenses: dict[int, set[str]] = defaultdict(set)  # Dedupes automatically
         self.lines = lines
         self.os_imported = False
-        self.path_aliases: Set[str] = set()  # Track 'path', 'ospath', etc.
+        self.path_aliases: set[str] = set()  # Track 'path', 'ospath', etc.
 
     def _record(self, node: ast.AST, context: str = "") -> None:
         """Record unique offense by line number."""
@@ -93,7 +93,7 @@ class OSPathDetector(ast.NodeVisitor):
                 self.visit_Attribute(child)
 
 
-def lint_file(filepath: Path) -> List[Tuple[int, str]]:
+def lint_file(filepath: Path) -> list[tuple[int, str]]:
     """Fast single-pass lint with early termination."""
     try:
         content = filepath.read_text(encoding="utf-8")
@@ -125,7 +125,7 @@ def lint_file(filepath: Path) -> List[Tuple[int, str]]:
     return result
 
 
-def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = None) -> Set[Path]:
+def find_python_files(paths: list[str], exclude_patterns: Optional[set[str]] = None) -> set[Path]:
     """Efficiently collect Python files with smart exclusions."""
     if exclude_patterns is None:
         exclude_patterns = {

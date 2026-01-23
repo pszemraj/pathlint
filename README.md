@@ -1,9 +1,9 @@
 # pathlint
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://pypi.org/project/pathlint/)
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://pypi.org/project/pathlint/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![PyPI version](https://badge.fury.io/py/pathlint.svg)](https://pypi.org/project/pathlint/)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 
 > Fast linter to detect os.path usage and encourage pathlib adoption
 
@@ -24,6 +24,44 @@ Still using `os.path` in 2025+? `pathlint` is a fast, comprehensive linter that 
 ```bash
 pip install pathlint
 ```
+
+## Pre-commit Hook Integration
+
+pathlint integrates with [pre-commit](https://pre-commit.com/) to catch os.path usage before commits.
+
+### Setup
+
+Add to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/pszemraj/pathlint
+    rev: v0.1.0  # Use latest release
+    hooks:
+      - id: pathlint
+```
+
+Install the hook:
+
+```bash
+pre-commit install
+```
+
+### Usage
+
+Runs automatically on `git commit`. Manual check:
+
+```bash
+pre-commit run pathlint --all-files
+```
+
+### Auto-fix Mode (Experimental)
+
+```yaml
+- id: pathlint-fix  # Use auto-fix hook instead
+```
+
+⚠️ Always review auto-fixed changes!
 
 ## Usage
 

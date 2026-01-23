@@ -5,10 +5,9 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
 # Common os.path to pathlib replacements
-REPLACEMENTS: List[Tuple[str, str]] = [
+REPLACEMENTS: list[tuple[str, str]] = [
     # Import statements
     (r"^import os\.path$", "from pathlib import Path"),
     (r"^from os import path$", "from pathlib import Path"),
