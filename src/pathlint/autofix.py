@@ -36,6 +36,7 @@ REPLACEMENTS: list[tuple[str, str]] = [
 
 
 def _consume_string(text: str, start: int) -> int:
+    """Return index just after the string literal starting at `start`."""
     quote = text[start]
     if text[start : start + 3] == quote * 3:
         i = start + 3
@@ -59,6 +60,7 @@ def _consume_string(text: str, start: int) -> int:
 
 
 def _find_matching_paren(text: str, start: int) -> Optional[int]:
+    """Find the closing parenthesis index for the call starting at `start`."""
     depth = 0
     i = start
     while i < len(text):
@@ -78,6 +80,7 @@ def _find_matching_paren(text: str, start: int) -> Optional[int]:
 
 
 def _split_args(arg_str: str) -> list[str]:
+    """Split a comma-separated argument string, respecting nesting and strings."""
     args: list[str] = []
     current: list[str] = []
     depth = 0
@@ -106,6 +109,7 @@ def _split_args(arg_str: str) -> list[str]:
 
 
 def _replace_join_calls(content: str, prefix: str) -> tuple[str, int]:
+    """Replace join calls for a given prefix and return updated content and count."""
     count = 0
     idx = 0
     prefix_len = len(prefix)

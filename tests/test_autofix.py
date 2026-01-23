@@ -333,9 +333,7 @@ class TestFixFileEdgeCases:
     def test_multiline_os_path_call(self, tmp_path: Path) -> None:
         """Multiline os.path calls should be auto-fixed."""
         test_file = tmp_path / "multiline.py"
-        test_file.write_text(
-            "import os.path\n" "result = os.path.exists(\n" "    'test.txt'\n" ")\n"
-        )
+        test_file.write_text("import os.path\nresult = os.path.exists(\n    'test.txt'\n)\n")
 
         count = fix_file(test_file, dry_run=False)
         assert count >= 2
