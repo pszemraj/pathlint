@@ -12,29 +12,29 @@ REPLACEMENTS: list[tuple[str, str]] = [
     (r"^import os\.path$", "from pathlib import Path"),
     (r"^from os import path$", "from pathlib import Path"),
     (r"^from os\.path import (.+)$", "from pathlib import Path"),
-    # Function replacements
-    (r"os\.path\.exists\(([^)]+)\)", r"Path(\1).exists()"),
-    (r"os\.path\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
-    (r"os\.path\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
-    (r"os\.path\.isabs\(([^)]+)\)", r"Path(\1).is_absolute()"),
-    (r"os\.path\.basename\(([^)]+)\)", r"Path(\1).name"),
-    (r"os\.path\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
-    (r"os\.path\.abspath\(([^)]+)\)", r"str(Path(\1).resolve())"),
-    (r"os\.path\.expanduser\(([^)]+)\)", r"str(Path(\1).expanduser())"),
-    (r"os\.path\.splitext\(([^)]+)\)", r"(Path(\1).stem, Path(\1).suffix)"),
-    # Join patterns - handle 2 and 3 arguments
-    (r"os\.path\.join\(([^,]+),\s*([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2 / \3)"),
-    (r"os\.path\.join\(([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2)"),
+    # Function replacements (use [^)\n]+ to avoid matching across lines)
+    (r"os\.path\.exists\(([^)\n]+)\)", r"Path(\1).exists()"),
+    (r"os\.path\.isfile\(([^)\n]+)\)", r"Path(\1).is_file()"),
+    (r"os\.path\.isdir\(([^)\n]+)\)", r"Path(\1).is_dir()"),
+    (r"os\.path\.isabs\(([^)\n]+)\)", r"Path(\1).is_absolute()"),
+    (r"os\.path\.basename\(([^)\n]+)\)", r"Path(\1).name"),
+    (r"os\.path\.dirname\(([^)\n]+)\)", r"str(Path(\1).parent)"),
+    (r"os\.path\.abspath\(([^)\n]+)\)", r"str(Path(\1).resolve())"),
+    (r"os\.path\.expanduser\(([^)\n]+)\)", r"str(Path(\1).expanduser())"),
+    (r"os\.path\.splitext\(([^)\n]+)\)", r"(Path(\1).stem, Path(\1).suffix)"),
+    # Join patterns - handle 2 and 3 arguments (use [^,\n]+ to avoid matching across lines)
+    (r"os\.path\.join\(([^,\n]+),\s*([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2 / \3)"),
+    (r"os\.path\.join\(([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2)"),
     # Path attributes
     (r"os\.path\.sep", 'Path.sep if hasattr(Path, "sep") else "/"'),
     (r"os\.path\.pathsep", 'Path.pathsep if hasattr(Path, "pathsep") else ":"'),
     # Handle 'from os import path' usage
-    (r"\bpath\.exists\(([^)]+)\)", r"Path(\1).exists()"),
-    (r"\bpath\.isfile\(([^)]+)\)", r"Path(\1).is_file()"),
-    (r"\bpath\.isdir\(([^)]+)\)", r"Path(\1).is_dir()"),
-    (r"\bpath\.join\(([^,]+),\s*([^)]+)\)", r"str(Path(\1) / \2)"),
-    (r"\bpath\.basename\(([^)]+)\)", r"Path(\1).name"),
-    (r"\bpath\.dirname\(([^)]+)\)", r"str(Path(\1).parent)"),
+    (r"\bpath\.exists\(([^)\n]+)\)", r"Path(\1).exists()"),
+    (r"\bpath\.isfile\(([^)\n]+)\)", r"Path(\1).is_file()"),
+    (r"\bpath\.isdir\(([^)\n]+)\)", r"Path(\1).is_dir()"),
+    (r"\bpath\.join\(([^,\n]+),\s*([^)\n]+)\)", r"str(Path(\1) / \2)"),
+    (r"\bpath\.basename\(([^)\n]+)\)", r"Path(\1).name"),
+    (r"\bpath\.dirname\(([^)\n]+)\)", r"str(Path(\1).parent)"),
 ]
 
 
