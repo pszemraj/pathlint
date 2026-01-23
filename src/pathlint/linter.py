@@ -6,20 +6,30 @@ import ast
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 
 class OSPathDetector(ast.NodeVisitor):
     """Single-pass AST visitor that catches ALL os.path usage patterns."""
 
-    def __init__(self, lines: List[str]) -> None:
-        self.offenses: Dict[int, Set[str]] = defaultdict(set)  # Dedupes automatically
+    def __init__(self, lines: list[str]) -> None:
+        """Initialize AST visitor.
+
+        Args:
+            lines: Source code lines for context extraction.
+        """
+        self.offenses: dict[int, set[str]] = defaultdict(set)  # Dedupes automatically
         self.lines = lines
         self.os_imported = False
-        self.path_aliases: Set[str] = set()  # Track 'path', 'ospath', etc.
+        self.path_aliases: set[str] = set()  # Track 'path', 'ospath', etc.
 
     def _record(self, node: ast.AST, context: str = "") -> None:
-        """Record unique offense by line number."""
+        """Record unique offense by line number.
+
+        Args:
+            node: AST node where offense was detected.
+            context: Optional context string (unused, for future extension).
+        """
         if hasattr(node, "lineno"):
             line_idx = node.lineno - 1
             if 0 <= line_idx < len(self.lines):
@@ -87,14 +97,26 @@ class OSPathDetector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _check_annotation(self, annotation: ast.AST, source_node: ast.AST) -> None:
-        """Recursively check annotations for os.path."""
+        """Recursively check annotations for os.path.
+
+        Args:
+            annotation: AST node representing the type annotation.
+            source_node: Source AST node for context (unused).
+        """
         for child in ast.walk(annotation):
             if isinstance(child, ast.Attribute):
                 self.visit_Attribute(child)
 
 
-def lint_file(filepath: Path) -> List[Tuple[int, str]]:
-    """Fast single-pass lint with early termination."""
+def lint_file(filepath: Path) -> list[tuple[int, str]]:
+    """Fast single-pass lint with early termination.
+
+    Args:
+        filepath: Path to Python file to lint.
+
+    Returns:
+        List of (line_number, line_content) tuples for violations found.
+    """
     try:
         content = filepath.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
@@ -125,8 +147,16 @@ def lint_file(filepath: Path) -> List[Tuple[int, str]]:
     return result
 
 
-def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = None) -> Set[Path]:
-    """Efficiently collect Python files with smart exclusions."""
+def find_python_files(paths: list[str], exclude_patterns: Optional[set[str]] = None) -> set[Path]:
+    """Efficiently collect Python files with smart exclusions.
+
+    Args:
+        paths: List of file or directory paths to search.
+        exclude_patterns: Directory names to exclude (defaults to common patterns).
+
+    Returns:
+        Set of Python file paths found.
+    """
     if exclude_patterns is None:
         exclude_patterns = {
             "__pycache__",
@@ -157,7 +187,14 @@ def find_python_files(paths: List[str], exclude_patterns: Optional[Set[str]] = N
 
 
 def main_autofix(args: argparse.Namespace) -> int:
-    """Handle autofix mode separately."""
+    """Handle autofix mode separately.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 2 for no files found).
+    """
     from pathlint.autofix import fix_file
 
     files = find_python_files(args.paths)
