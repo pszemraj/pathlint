@@ -37,14 +37,12 @@ def run(source: str) -> object:
         ("import os", "os.path.dirname(FILE)"),
         ("import os", "os.path.expanduser('directory')"),
         ("import os", "os.path.join('directory', 'file')"),
-        ("import os", "os.path.basename(os.path.join('directory', 'file'))"),
         ("import pathlib\nimport os", "os.path.isabs(FILE)"),
         ("import pathlib as paths\nimport os", "os.path.isabs(FILE)"),
         ("from pathlib import Path as P\nimport os", "os.path.isabs(FILE)"),
         ("import os.path as paths", "(paths.basename)('directory/file')"),
         ("import os", "((os.path.isabs))(FILE)"),
         ("from os.path import isabs as present", "(present)(FILE)"),
-        ("import os", "(os.path.basename)((os.path.join)('directory', 'file'))"),
         ("import os", "(\n    (os.path.basename)  # callable (comment\n    ('directory/file')\n)"),
     ],
 )
@@ -366,6 +364,8 @@ def test_type_parameter_scopes_and_lazy_aliases_are_not_rewritten(body: str, exp
         "os.path.exists(-1)",
         "os.path.expanduser('')",
         "os.path.expanduser('directory/')",
+        "os.path.expanduser('~')",
+        "os.path.expanduser('~/file')",
         "os.path.expanduser('~__pathlint_nonexistent_user__/file')",
         "os.path.expanduser('./file')",
         "os.path.join('./file')",
@@ -381,6 +381,19 @@ def test_inexact_literal_calls_preserve_results(expression: str) -> None:
     updated, count = fix_content(source)
     assert count == 0
     assert updated == source
+    assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize("home", [".", "/tmp/directory//subdirectory", ""])
+@pytest.mark.parametrize("value", ["~", "~/file"])
+def test_home_expansion_preserves_environment_spellings(
+    monkeypatch: pytest.MonkeyPatch, home: str, value: str
+) -> None:
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+    source = f"import os.path as osp\nresult = osp.expanduser({value!r})\n"
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
     assert run(updated) == run(source)
 
 
@@ -507,11 +520,34 @@ def test_nested_aliased_byte_path_calls_stay_unchanged(imports: str, call: str) 
         "f'directory/{\"file\"}'",
     ],
 )
-def test_text_path_expressions_remain_supported(argument: str) -> None:
+def test_nonliteral_text_path_expressions_stay_unchanged(argument: str) -> None:
     source = f"import os\nresult = os.path.basename({argument})\n"
     updated, count = fix_content(source)
-    assert count == 1
+    assert (updated, count) == (source, 0)
     assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize(
+    ("method", "argument", "value", "expected"),
+    [
+        ("dirname", "value", "'file'", ""),
+        ("basename", "value", "'directory/'", ""),
+        ("join", "'directory', value", "''", "directory" + os.sep),
+        (
+            "expanduser",
+            "value",
+            "'~__pathlint_nonexistent_user__/file'",
+            "~__pathlint_nonexistent_user__/file",
+        ),
+        ("isabs", "value", "b'file'", False),
+    ],
+)
+def test_unknown_path_values_preserve_results(
+    method: str, argument: str, value: str, expected: object
+) -> None:
+    source = f"import os.path as osp\nvalue = {value}\nresult = osp.{method}({argument})\n"
+    assert fix_content(source) == (source, 0)
+    assert run(source) == expected
 
 
 @pytest.mark.parametrize("builtin", ["str", "repr", "ascii"])
@@ -680,19 +716,25 @@ def test_text_subclass_index_byte_results_stay_unchanged() -> None:
 
 
 @pytest.mark.parametrize(
-    ("imports", "argument"),
+    ("imports", "argument", "changes"),
     [
-        ("from pathlib import Path", "Path('directory/file')"),
-        ("from pathlib import PurePath as P", "P('directory/file')"),
-        ("from os.path import join as connect", "connect('directory', 'file')"),
-        ("from os.path import splitext as split", "split('directory/file.txt')[0]"),
+        ("from pathlib import Path", "Path('directory/file')", False),
+        ("from pathlib import PurePath as P", "P('directory/file')", False),
+        ("from os.path import join as connect", "connect('directory', 'file')", True),
+        ("from os.path import splitext as split", "split('directory/file.txt')[0]", False),
+        ("", "os.path.join('directory', 'file')", True),
+        ("", "(os.path.join)('directory', 'file')", True),
     ],
 )
-def test_known_path_return_contracts_remain_supported(imports: str, argument: str) -> None:
+def test_nested_calls_only_rewrite_literal_arguments(
+    imports: str, argument: str, changes: bool
+) -> None:
     source = f"import os\n{imports}\nresult = os.path.basename({argument})\n"
     updated, count = fix_content(source)
-    assert count > 0
+    assert bool(count) is changes
+    assert "os.path.basename(" in updated
     assert run(updated) == run(source)
+    assert fix_content(updated) == (updated, 0)
 
 
 @pytest.mark.parametrize("method", ["exists", "isfile"])

@@ -133,9 +133,9 @@ class TestFixFileComplex:
         assert "Path('test').name" in result
 
     def test_mixed_os_path_calls(self, tmp_path: Path) -> None:
-        """Test file with various os.path functions."""
+        """Keep calls whose argument values are unknown."""
         test_file = tmp_path / "test.py"
-        test_file.write_text(
+        original = (
             "import os.path\n"
             "def process_file(filepath):\n"
             "    if os.path.isabs(filepath):\n"
@@ -145,17 +145,11 @@ class TestFixFileComplex:
             "        return os.path.join(directory, name)\n"
             "    return None\n"
         )
+        test_file.write_text(original)
 
         count = fix_file(test_file, dry_run=False)
-        assert count >= 4
-
-        result = test_file.read_text()
-        assert "Path(filepath).is_absolute()" in result
-        assert "Path(filepath).name" in result
-        assert "str(Path(filepath).parent)" in result
-        assert (
-            "os.path.abspath(filepath)" in result
-        )  # Resolving symlinks changes abspath semantics.
+        assert count == 0
+        assert test_file.read_text() == original
 
     def test_preserves_code_structure(self, tmp_path: Path) -> None:
         """Ensure code structure is preserved."""
@@ -184,18 +178,14 @@ class TestFixFileComplex:
         assert "class Bar:" in result
 
     def test_nested_os_path_calls(self, tmp_path: Path) -> None:
-        """Test nested os.path function calls."""
+        """Keep nested calls when their argument values are unknown."""
         test_file = tmp_path / "test.py"
-        test_file.write_text(
-            "import os.path\nresult = os.path.basename(os.path.dirname(__file__))\n"
-        )
+        original = "import os.path\nresult = os.path.basename(os.path.dirname(__file__))\n"
+        test_file.write_text(original)
 
         count = fix_file(test_file, dry_run=False)
-        assert count >= 2
-
-        result = test_file.read_text()
-        # Should handle nested calls (may not be perfect due to regex limitations)
-        assert "Path" in result
+        assert count == 0
+        assert test_file.read_text() == original
 
     def test_three_arg_join(self, tmp_path: Path) -> None:
         """Test os.path.join with 3 arguments."""
@@ -324,14 +314,14 @@ class TestFixFileEdgeCases:
         assert "import os.path" not in result
 
     def test_join_with_nested_commas(self, tmp_path: Path) -> None:
-        """Nested commas inside args should not break parsing."""
+        """Keep joins with nonliteral arguments containing nested commas."""
         test_file = tmp_path / "nested_commas.py"
         original = "import os.path\npath = os.path.join('a', '%s%s' % ('b', 'c'), ['d', 'e'][0])\n"
         test_file.write_text(original)
 
-        fix_file(test_file, dry_run=False)
+        assert fix_file(test_file, dry_run=False) == 0
         result = test_file.read_text()
-        assert "str(Path('a', '%s%s' % ('b', 'c'), ['d', 'e'][0]))" in result
+        assert result == original
         original_namespace: dict[str, object] = {}
         fixed_namespace: dict[str, object] = {}
         exec(compile(original, "<original>", "exec"), original_namespace)

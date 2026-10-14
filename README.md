@@ -212,23 +212,24 @@ pathlint fix src/ --dry-run --no-color
 
 Fixes use AST locations to change expressions while preserving surrounding
 source text, including comments and strings. Imported aliases, named function
-imports, nested calls, and expressions inside f-strings are supported. Pathlib
-imports are placed after module docstrings and future imports, and existing
+imports, calls inside nested expressions, and expressions inside f-strings are
+supported. Pathlib imports are placed after module docstrings and future imports, and existing
 Pathlib aliases are reused where possible.
 
-Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`.
+Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`
+with string-literal arguments. Calls with nonliteral arguments, including variables
+and nested calls, remain unchanged; eligible literal calls inside them can still
+be fixed. Values and types are not inferred.
 Unsupported references retain their imports.
 Keyword arguments, starred arguments, call targets containing comments, literal
 file descriptors, byte paths, and known inexact literal forms are left unchanged.
 Known inexact forms include empty paths, trailing separators, named-user
 expansion, and rooted literals passed to `isabs` whose interpretation can differ
 under Windows path rules.
+All tilde-prefixed `expanduser` arguments remain unchanged because home values
+can contain spellings that Pathlib normalizes or fail to resolve.
 On Windows, string-returning fixes also skip literals whose separators or dot
 components Pathlib would normalize.
-Recognized byte-producing expressions such as concatenation, encoding, and nested
-`os.path` calls also remain unchanged. Expressions containing bytes or opaque
-nested calls are skipped conservatively, including explicit text conversions.
-Variable types are not inferred.
 Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes or callable internals are assigned or
 deleted are also left unchanged. Calls outside annotation expressions remain
@@ -264,8 +265,7 @@ or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
 unchanged: on supported Python versions, their Pathlib replacements can raise
 filesystem errors where `os.path` returns `False`.
 
-**Review every diff and test the result.** Pathlib normalizes path strings, so
-conversions involving variable values can still affect string-sensitive code.
+**Review every diff and test the result.** Pathlib normalizes path strings.
 The fixer does not promise to remove every violation. Diff colors are enabled
 only on interactive terminals.
 

@@ -329,49 +329,12 @@ class _PathFixer(OSPathDetector):
             )
         self.generic_visit(node)
 
-    def _may_return_bytes(self, node: ast.AST) -> bool:
-        """Find byte sources and opaque calls without evaluating or tracking types.
-
-        :param ast.AST node: Path argument or syntax that can supply its result.
-        :return bool: Whether byte sources or uncertain call results occur in the argument.
-        """
-        if isinstance(node, ast.Constant):
-            return isinstance(node.value, bytes)
-        if isinstance(node, ast.Name):
-            return node.id == "bytes" or self.resolve(node) == "builtins.bytes"
-        if isinstance(node, ast.Call):
-            origin = self.resolve(node.func)
-            if origin not in {
-                "pathlib.Path",
-                "pathlib.PurePath",
-                "os.path.join",
-                "os.path.basename",
-                "os.path.dirname",
-                "os.path.expanduser",
-                "os.path.abspath",
-                "os.path.expandvars",
-                "os.path.normcase",
-                "os.path.normpath",
-                "os.path.realpath",
-                "os.path.relpath",
-                "os.path.split",
-                "os.path.splitext",
-                "os.path.splitdrive",
-                "os.path.splitroot",
-            }:
-                return True
-        # Inspect every child, including indices and formatting operands: user-defined
-        # operators and subclasses can return bytes despite text-looking syntax.
-        return any(self._may_return_bytes(child) for child in ast.iter_child_nodes(node))
-
     def visit_Call(self, node: ast.Call) -> None:
         """Rewrite supported imported os.path calls after processing nested calls.
 
         :param ast.Call node: Call expression to inspect for a supported transformation.
         """
         origin = self.resolve(node.func)
-        # Later argument branches can rebind a nested call's original alias.
-        byte_arguments = any(self._may_return_bytes(arg) for arg in node.args)
         self.generic_visit(node)
         if node in self.debug_calls or node in self.annotation_calls:
             return
@@ -381,18 +344,11 @@ class _PathFixer(OSPathDetector):
             # Path also depends on inherited and platform-specific pathlib classes.
             return
         function = origin.removeprefix("os.path.")
-        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
-            return
-        if byte_arguments or any(
-            self._may_return_bytes(arg)
-            or (isinstance(arg, ast.Constant) and not isinstance(arg.value, str))
-            or (
-                isinstance(arg, ast.UnaryOp)
-                and isinstance(arg.operand, ast.Constant)
-                and not isinstance(arg.operand.value, str)
-            )
-            for arg in node.args
+        if node.keywords or any(
+            not isinstance(arg, ast.Constant) or not isinstance(arg.value, str) for arg in node.args
         ):
+            # Unknown values can contain bytes, normalized spellings, or unknown
+            # users. Keep the call; eligible literal calls inside it still migrate.
             return
         if function == "join":
             if not node.args:
@@ -463,10 +419,9 @@ class _PathFixer(OSPathDetector):
             function == "expanduser"
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value.startswith("~")
-            and node.args[0].value != "~"
-            and not node.args[0].value.startswith("~/")
         ):
-            # os.path leaves unknown users unchanged; Path.expanduser raises.
+            # Home values can contain spelling that pathlib normalizes, and
+            # os.path leaves unknown users unchanged where Path.expanduser raises.
             return
         start, end = self.source.span(node)
         function_start, function_end = self.source.span(node.func)
