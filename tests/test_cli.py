@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import pathlint
 from pathlint import cli
 
 OFFENDING = "import os\nvalue = os.path.exists('example')\n"
@@ -364,6 +366,49 @@ def test_uninstalled_source_version_is_helpful(
         cli.main(["--version"])
     assert result.value.code == 0
     assert "unknown (not installed)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_package_version_uses_metadata_or_unknown(
+    monkeypatch: pytest.MonkeyPatch, installed: bool
+) -> None:
+    def lookup(name: str) -> str:
+        assert name == "pathlint"
+        if not installed:
+            raise PackageNotFoundError(name)
+        return "9.8.7"
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(importlib.metadata, "version", lookup)
+            importlib.reload(pathlint)
+            from pathlint import __version__
+
+            assert __version__ == ("9.8.7" if installed else "unknown")
+    finally:
+        importlib.reload(pathlint)
+
+
+def test_package_version_does_not_need_generated_version_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(importlib.metadata, "version", lambda name: "9.8.7")
+            patch.setitem(sys.modules, "pathlint._version", None)
+            importlib.reload(pathlint)
+            assert pathlint.__version__ == "9.8.7"
+    finally:
+        importlib.reload(pathlint)
+
+
+def test_cli_and_package_report_same_version(workspace: Path) -> None:
+    from pathlint import __version__
+
+    result = invoke(workspace, "--version")
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.split()[1] == __version__
 
 
 def test_interrupt_returns_conventional_status(monkeypatch: pytest.MonkeyPatch) -> None:
