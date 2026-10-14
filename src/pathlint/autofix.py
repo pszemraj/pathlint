@@ -290,7 +290,15 @@ class _PathFixer(OSPathDetector):
         function = origin.removeprefix("os.path.")
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
             return
-        if any(isinstance(arg, ast.Constant) and isinstance(arg.value, bytes) for arg in node.args):
+        if any(
+            (isinstance(arg, ast.Constant) and not isinstance(arg.value, str))
+            or (
+                isinstance(arg, ast.UnaryOp)
+                and isinstance(arg.operand, ast.Constant)
+                and not isinstance(arg.operand.value, str)
+            )
+            for arg in node.args
+        ):
             return
         if function == "join":
             if not node.args:
@@ -302,7 +310,7 @@ class _PathFixer(OSPathDetector):
         ):
             return
         # These literal spellings have different string results under pathlib.
-        if function in {"basename", "dirname", "join"} and any(
+        if function != "isabs" and any(
             isinstance(arg, ast.Constant)
             and isinstance(arg.value, str)
             and (
@@ -318,8 +326,17 @@ class _PathFixer(OSPathDetector):
             function == "dirname"
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
-            and not any(separator in node.args[0].value for separator in ("/", "\\"))
+            and "/" not in node.args[0].value
         ):
+            return
+        if (
+            function == "expanduser"
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value.startswith("~")
+            and node.args[0].value != "~"
+            and not node.args[0].value.startswith(("~/", "~\\"))
+        ):
+            # os.path leaves unknown users unchanged; Path.expanduser raises.
             return
         start, end = self.source.span(node)
         function_start, function_end = self.source.span(node.func)

@@ -81,6 +81,40 @@ def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> N
     assert fix_content(original) == (original, 0)
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "os.path.exists('')",
+        "os.path.isdir('')",
+        "os.path.isfile('')",
+        "os.path.exists(0)",
+        "os.path.isfile(0)",
+        "os.path.exists(-1)",
+        "os.path.expanduser('')",
+        "os.path.expanduser('directory/')",
+        "os.path.expanduser('~__pathlint_nonexistent_user__/file')",
+        r"os.path.dirname('directory\\file')",
+    ],
+)
+def test_inexact_literal_calls_preserve_results(expression: str) -> None:
+    source = f"import os\nresult = {expression}\n"
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize("method", ["exists", "isfile"])
+def test_file_with_trailing_separator_is_not_normalized(tmp_path: Path, method: str) -> None:
+    target = tmp_path / "file"
+    target.write_text("content", encoding="utf-8")
+    source = f"import os\nresult = os.path.{method}({str(target) + '/'!r})\n"
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    assert run(updated) == run(source) is False
+
+
 def test_abspath_is_not_replaced_by_symlink_resolution(tmp_path: Path) -> None:
     actual = tmp_path / "actual"
     actual.mkdir()
