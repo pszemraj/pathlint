@@ -626,15 +626,46 @@ def test_resolution_errors_are_reported(
     assert discover_files([tmp_path]) == ([], [(tmp_path, str(error))])
 
 
-def test_cyclic_symlink_input_does_not_discard_valid_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize("patterns", [(), ("loop.py",), ("./loop.py",), ("loop.py/",)])
+def test_cyclic_symlink_input_does_not_discard_valid_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patterns: tuple[str, ...]
+) -> None:
+    monkeypatch.chdir(tmp_path)
     wanted = write(tmp_path, "keep.py")
+    wanted.write_text("import os\nos.path.join('a', 'b')\n", encoding="utf-8")
     loop = tmp_path / "loop.py"
     loop.symlink_to(loop)
-    files, errors = discover_files([loop, wanted])
+    files, errors = discover_files([loop, wanted], exclude_patterns=patterns)
     assert files == [wanted]
-    assert len(errors) == 1
-    assert errors[0][0] == loop
-    assert "loop" in errors[0][1].lower()
+    expected_errors = int(not patterns or patterns == ("loop.py/",))
+    assert len(errors) == expected_errors
+    if errors:
+        assert errors[0][0] == loop
+        assert "loop" in errors[0][1].lower()
+
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+    if "COV_CORE_SOURCE" in env:
+        env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
+    exclusions = [argument for pattern in patterns for argument in ("--exclude", pattern)]
+    for command in (["files"], ["check", "--output-format", "json"]):
+        result = subprocess.run(
+            [sys.executable, "-m", "pathlint", *command, "loop.py", "keep.py", *exclusions],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == (2 if expected_errors else int(command[0] == "check"))
+        if command[0] == "check":
+            report = json.loads(result.stdout)
+            assert report["summary"]["files_checked"] == 1
+            assert len(report["errors"]) == expected_errors
+            assert [entry["path"] for entry in report["diagnostics"]] == ["keep.py"]
+            assert result.stderr == ""
+        else:
+            assert result.stdout == "keep.py\n"
+            assert ("loop" in result.stderr.lower()) is bool(expected_errors)
 
 
 @pytest.mark.parametrize("pattern", ["alias.py", "./alias.py", "links/*.py"])

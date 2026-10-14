@@ -248,7 +248,8 @@ def discover_files(
                 path = path.resolve()
             except RuntimeError as error:
                 # Python 3.9-3.12 report symbolic-link loops as RuntimeError.
-                errors.append((path, str(error)))
+                if not is_excluded(alias, exclude_patterns):
+                    errors.append((path, str(error)))
                 continue
             if not path.exists():
                 errors.append((path, "Path does not exist"))
