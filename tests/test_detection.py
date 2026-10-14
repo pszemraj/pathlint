@@ -128,6 +128,34 @@ def test_global_and_nonlocal_declarations_preserve_import_resolution() -> None:
     assert set(offenses(source)) == {4, 6, 9}
 
 
+@pytest.mark.parametrize("declaration", ["global", "nonlocal"])
+@pytest.mark.parametrize("module_import", [False, True])
+def test_nested_external_declaration_selects_its_namespace(
+    declaration: str, module_import: bool
+) -> None:
+    custom = "os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))"
+    module_binding = "import os" if module_import else custom
+    outer_binding = custom if module_import else "import os"
+    source = (
+        "from types import SimpleNamespace\n"
+        f"{module_binding}\n"
+        "def outer():\n"
+        f"    {outer_binding}\n"
+        "    def inner():\n"
+        f"        {declaration} os\n"
+        "        return os.path.exists('unlikely-name')\n"
+        "    return inner()\n"
+        "result = outer()\n"
+    )
+    uses_import = module_import if declaration == "global" else not module_import
+    assert set(offenses(source)) == ({7} if uses_import else set())
+    updated, _ = fix_content(source)
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<external>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == (False if uses_import else "custom")
+
+
 def test_class_assignment_does_not_shadow_global_inside_methods() -> None:
     source = """
         import os

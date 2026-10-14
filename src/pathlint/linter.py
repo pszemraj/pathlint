@@ -17,6 +17,7 @@ class _ScopeNames(ast.NodeVisitor):
         """Initialize the sets of local and explicitly external names."""
         self.names: set[str] = set()
         self.external: set[str] = set()
+        self.globals: set[str] = set()
 
     def visit_Name(self, node: ast.Name) -> None:
         """Collect names assigned or deleted in the current scope."""
@@ -95,10 +96,13 @@ class _ScopeNames(ast.NodeVisitor):
     visit_GeneratorExp = visit_ListComp
 
     def visit_Global(self, node: ast.Global) -> None:
-        """Record global or nonlocal declarations as external bindings."""
+        """Record names that must resolve against the module namespace."""
         self.external.update(node.names)
+        self.globals.update(node.names)
 
-    visit_Nonlocal = visit_Global
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        """Record names that resolve against an enclosing function namespace."""
+        self.external.update(node.names)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         """Collect an exception alias and bindings within the handler."""
@@ -130,6 +134,7 @@ class OSPathDetector(ast.NodeVisitor):
         self.lines = lines
         self.scopes: list[dict[str, str | None]] = [{}]
         self.scope_kinds = ["module"]
+        self.scope_globals: list[set[str]] = [set()]
         self.os_imported = False
         self.path_aliases: set[str] = set()
         self.mutated_attributes: set[str] = set()
@@ -139,6 +144,7 @@ class OSPathDetector(ast.NodeVisitor):
                 ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
                 list[dict[str, str | None]],
                 list[str],
+                list[set[str]],
             ]
         ] = []
 
@@ -148,8 +154,9 @@ class OSPathDetector(ast.NodeVisitor):
             self.visit(statement)
         # Function bodies use enclosing bindings after those scopes finish defining names.
         # This also avoids rewriting aliases that the enclosing scope reassigns later.
-        for function, scopes, kinds in self.deferred:
+        for function, scopes, kinds, globals_ in self.deferred:
             self.scopes, self.scope_kinds = scopes.copy(), kinds.copy()
+            self.scope_globals = globals_.copy()
             names = _ScopeNames()
             names.visit(function.args)
             body = [function.body] if isinstance(function, ast.Lambda) else function.body
@@ -157,9 +164,11 @@ class OSPathDetector(ast.NodeVisitor):
                 names.visit(statement)
             self.scopes.append(dict.fromkeys(names.names - names.external))
             self.scope_kinds.append("function")
+            self.scope_globals.append(names.globals)
             for statement in body:
                 self.visit(statement)
         self.scopes, self.scope_kinds = [self.scopes[0]], ["module"]
+        self.scope_globals = [set()]
 
     def resolve_name(self, name: str) -> str | None:
         """Resolve an imported name in the current lexical scope.
@@ -171,6 +180,8 @@ class OSPathDetector(ast.NodeVisitor):
                 continue
             if name in self.scopes[index]:
                 return self.scopes[index][name]
+            if name in self.scope_globals[index]:
+                return self.scopes[0].get(name)
         return None
 
     def resolve(self, node: ast.AST) -> str | None:
@@ -269,14 +280,18 @@ class OSPathDetector(ast.NodeVisitor):
         if node.returns:
             self.visit(node.returns)
         self.scopes[-1][node.name] = None
-        self.deferred.append((node, self.scopes.copy(), self.scope_kinds.copy()))
+        self.deferred.append(
+            (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
+        )
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         """Visit lambda arguments and defer its body for lexical analysis."""
         self.visit(node.args)
-        self.deferred.append((node, self.scopes.copy(), self.scope_kinds.copy()))
+        self.deferred.append(
+            (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
+        )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Visit class definition expressions and the body in its own scope."""
@@ -284,10 +299,15 @@ class OSPathDetector(ast.NodeVisitor):
             self.visit(expression)
         self.scopes.append({})
         self.scope_kinds.append("class")
+        names = _ScopeNames()
+        for statement in node.body:
+            names.visit(statement)
+        self.scope_globals.append(names.globals)
         for statement in node.body:
             self.visit(statement)
         self.scopes.pop()
         self.scope_kinds.pop()
+        self.scope_globals.pop()
         self.scopes[-1][node.name] = None
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -366,6 +386,7 @@ class OSPathDetector(ast.NodeVisitor):
             self.scopes[owner][name] = None
         self.scopes.append({})
         self.scope_kinds.append("comprehension")
+        self.scope_globals.append(set())
         for index, generator in enumerate(node.generators):
             if index:
                 self.visit(generator.iter)
@@ -379,6 +400,7 @@ class OSPathDetector(ast.NodeVisitor):
             self.visit(node.elt)
         self.scopes.pop()
         self.scope_kinds.pop()
+        self.scope_globals.pop()
 
     visit_SetComp = visit_ListComp
     visit_DictComp = visit_ListComp
