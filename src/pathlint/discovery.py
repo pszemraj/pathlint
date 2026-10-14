@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Collection, Sequence
@@ -184,10 +185,20 @@ def discover_files(
                         ],
                         capture_output=True,
                         check=False,
+                        env=dict(os.environ, LC_ALL="C"),
                     )
                     if listing.returncode:
                         errors.append((root, listing.stderr.decode(errors="replace").strip()))
                         return
+                    directory_warning = rb"warning: could not open directory '(.*?)': [^\n]*\n"
+                    for warning in re.finditer(directory_warning, listing.stderr, re.DOTALL):
+                        relative = Path(os.fsdecode(warning[1]))
+                        candidate = root / relative
+                        if not excluded(candidate, alias / relative, directory=True):
+                            errors.append((candidate, warning[0].decode(errors="replace").strip()))
+                    remaining = re.sub(directory_warning, b"", listing.stderr, flags=re.DOTALL)
+                    if remaining.strip():
+                        errors.append((root, remaining.decode(errors="replace").strip()))
                     for item in listing.stdout.split(b"\0"):
                         if not item:
                             continue

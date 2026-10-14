@@ -339,6 +339,107 @@ def test_git_listing_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
+def test_git_unreadable_untracked_directories_report_warnings_and_continue(repo: Path) -> None:
+    blocked = [repo / "blocked", repo / "quoted'\nuni-ä"]
+    wanted = write(repo, "z.py")
+    source = "import os\nos.path.exists('example')\n"
+    wanted.write_text(source, encoding="utf-8")
+    for directory in blocked:
+        write(directory, "hidden.py")
+        directory.chmod(0)
+    try:
+        if any(os.access(directory, os.X_OK) for directory in blocked):
+            pytest.skip("Current user bypasses directory permissions")
+        files, errors = discover_files([repo])
+        assert files == [wanted]
+        assert {path for path, _ in errors} == set(blocked)
+        assert len(errors) == 2
+        assert all("Permission denied" in message for _, message in errors)
+
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+        if "COV_CORE_SOURCE" in env:
+            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
+        for command in (["files"], ["check", "--output-format", "json"], ["fix", "--dry-run"]):
+            result = subprocess.run(
+                [sys.executable, "-m", "pathlint", *command, "."],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 2
+            if command[0] == "check":
+                report = json.loads(result.stdout)
+                assert report["summary"]["files_checked"] == 1
+                assert report["summary"]["errors"] == 2
+                assert [entry["path"] for entry in report["diagnostics"]] == ["z.py"]
+                assert {entry["path"] for entry in report["errors"]} == {
+                    directory.name for directory in blocked
+                }
+                assert result.stderr == ""
+            else:
+                assert "z.py" in result.stdout
+                assert result.stderr.count("Permission denied") == 2
+        assert wanted.read_text(encoding="utf-8") == source
+    finally:
+        for directory in blocked:
+            directory.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
+def test_git_directory_warnings_honor_default_and_alias_exclusions(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blocked = [repo / "nested/blocked", repo / "build"]
+    wanted = write(repo, "keep.py")
+    for directory in blocked:
+        write(directory, "hidden.py")
+        directory.chmod(0)
+    try:
+        if any(os.access(directory, os.X_OK) for directory in blocked):
+            pytest.skip("Current user bypasses directory permissions")
+        files, errors = discover_files([repo])
+        assert files == [wanted]
+        assert [path for path, _ in errors] == [blocked[0]]
+        for pattern in ("blocked", "nested/*", "./nested/blocked/", str(blocked[0])):
+            assert discover_files([repo], exclude_patterns=(pattern,)) == ([wanted], [])
+        files, errors = discover_files([repo], default_excludes=())
+        assert files == [wanted]
+        assert {path for path, _ in errors} == set(blocked)
+
+        alias = repo.parent / "alias"
+        alias.symlink_to(repo, target_is_directory=True)
+        monkeypatch.chdir(repo.parent)
+        assert discover_files([alias], exclude_patterns=("alias/nested/*",)) == ([wanted], [])
+        assert discover_files([alias], exclude_patterns=("alias/nested/blocked/",)) == (
+            [wanted],
+            [],
+        )
+    finally:
+        for directory in blocked:
+            directory.chmod(0o755)
+
+
+def test_successful_git_listing_preserves_other_stderr(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wanted = write(repo, "keep.py")
+    original_run = subprocess.run
+
+    def warn_listing(args, **kwargs):
+        result = original_run(args, **kwargs)
+        if "ls-files" in args:
+            return subprocess.CompletedProcess(
+                args, 0, result.stdout, b"warning: listing incomplete\n"
+            )
+        return result
+
+    monkeypatch.setattr("pathlint.discovery.subprocess.run", warn_listing)
+    assert discover_files([repo]) == ([wanted], [(repo, "warning: listing incomplete")])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
 @pytest.mark.parametrize(
     "patterns", [(), ("blocked",), ("blocked/",), ("./blocked",), ("blocked/a.py",)]
 )
@@ -351,6 +452,7 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
     source = "import os\nos.path.exists('example')\n"
     wanted.write_text(source, encoding="utf-8")
     git(repo, "add", "blocked/a.py", "z.py")
+    write(repo, "blocked/untracked.py").write_text(source, encoding="utf-8")
     blocked = blocked_file.parent
     original_mode = blocked.stat().st_mode
     blocked.chmod(0)
@@ -360,10 +462,13 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
         paths = [blocked_file, wanted] if named else [repo]
         files, errors = discover_files(paths, exclude_patterns=patterns)
         assert files == [wanted]
-        assert len(errors) == (0 if patterns else 1)
+        # Excluding a tracked file does not exclude unreadable untracked contents.
+        directory_error = not named and patterns in ((), ("blocked/a.py",))
+        expected_errors = int(not patterns) + int(directory_error)
+        assert len(errors) == expected_errors
         if errors:
-            assert errors[0][0] == blocked_file
-            assert "Permission denied" in errors[0][1]
+            assert {path for path, _ in errors} <= {blocked_file, blocked}
+            assert all("Permission denied" in message for _, message in errors)
 
         env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
         if "COV_CORE_SOURCE" in env:
@@ -382,16 +487,16 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
                 text=True,
                 check=False,
             )
-            assert result.returncode == (int(command[0] != "files") if patterns else 2)
+            assert result.returncode == (2 if expected_errors else int(command[0] != "files"))
             if command[0] == "check":
                 report = json.loads(result.stdout)
                 assert report["summary"]["files_checked"] == 1
                 assert [entry["path"] for entry in report["diagnostics"]] == ["z.py"]
-                assert len(report["errors"]) == (0 if patterns else 1)
+                assert len(report["errors"]) == expected_errors
                 assert result.stderr == ""
             else:
                 assert "z.py" in result.stdout
-                assert ("Permission denied" in result.stderr) is (not patterns)
+                assert ("Permission denied" in result.stderr) is bool(expected_errors)
         assert wanted.read_text(encoding="utf-8") == source
     finally:
         blocked.chmod(original_mode)
@@ -415,7 +520,7 @@ def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
             pytest.skip("Current user bypasses directory permissions")
         files, errors = discover_files([repo], respect_gitignore=respect_gitignore)
         assert files == [wanted]
-        assert len(errors) == 2
+        assert len(errors) == 2 + int(respect_gitignore)
         assert any(path == link for path, _ in errors)
         assert discover_files(
             [repo],
