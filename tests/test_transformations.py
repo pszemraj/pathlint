@@ -239,7 +239,7 @@ def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
     updated, count = fix_content(original)
     assert count == 1
     assert "from os.path import exists, isfile, isdir, basename\n" in updated
-    assert "Path('directory/file').name" in updated
+    assert "_Path('directory/file').name" in updated
     assert run(updated) == run(original) == (True, True, True, "file")
     assert fix_content(updated) == (updated, 0)
 
@@ -843,7 +843,7 @@ def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression
     original = f"import os.path as p\nresult = {expression}\n"
     updated, count = fix_content(original)
     assert count > 0
-    assert "Path(" in updated
+    assert "_Path(" in updated
     assert run(updated) == run(original)
     assert fix_content(updated) == (updated, 0)
 
@@ -1054,7 +1054,51 @@ def test_constructor_does_not_collide_with_local_names(preamble: str) -> None:
     updated, count = fix_content(original)
     assert count > 0
     assert run(updated) == run(original)
-    assert "from pathlib import Path as PathlintPath" in updated
+    assert "from pathlib import Path as _Path\n" in updated
+
+
+@pytest.mark.parametrize(
+    ("preamble", "parameter", "alias"),
+    [
+        ("_Path = object()\n", "value", "_Path_"),
+        ("_Path = object()\n_Path_ = object()\n", "value", "_Path__"),
+        ("", "_Path", "_Path_"),
+    ],
+)
+def test_generated_private_constructor_avoids_source_names(
+    preamble: str, parameter: str, alias: str
+) -> None:
+    source = (
+        preamble + "import os\n"
+        f"def check({parameter}):\n"
+        "    return os.path.basename('directory/file')\n"
+        "result = check(object())\n"
+    )
+    updated, count = fix_content(source)
+    assert count == 1
+    assert f"from pathlib import Path as {alias}\n" in updated
+    assert f"return {alias}('directory/file').name" in updated
+    assert run(updated) == run(source) == "file"
+    assert fix_content(updated) == (updated, 0)
+
+
+@pytest.mark.parametrize(
+    ("imports", "constructor"),
+    [
+        ("from pathlib import Path", "Path"),
+        ("from pathlib import Path as P", "P"),
+        ("from pathlib import Path as _P", "_P"),
+        ("import pathlib", "pathlib.Path"),
+        ("import pathlib as paths", "paths.Path"),
+    ],
+)
+def test_existing_pathlib_constructor_alias_is_reused(imports: str, constructor: str) -> None:
+    source = imports + "\nimport os\nresult = os.path.basename('directory/file')\n"
+    updated, count = fix_content(source)
+    assert count == 1
+    assert f"result = {constructor}('directory/file').name" in updated
+    assert "from pathlib import Path as _Path\n" not in updated
+    assert run(updated) == run(source) == "file"
 
 
 @pytest.mark.parametrize(
@@ -1366,7 +1410,7 @@ def test_import_cleanup_preserves_module_docstring(
     assert "from os.path import basename" in updated
     if migrate_call:
         assert count > 0
-        assert "filename = Path(" in updated
+        assert "filename = _Path(" in updated
     for content in (source, updated):
         module = ModuleType("fixture")
         exec(compile(content, "<fixture>", "exec"), module.__dict__)
@@ -1764,7 +1808,8 @@ def test_import_cleanup_preserves_public_exports(
                 "import sys; sys.path.insert(0, sys.argv[1]); "
                 f"from fixture import {export}; "
                 f"assert {call}('directory/file') == 'file'; "
-                f"from fixture import *; print({call}('directory/file'))",
+                "Path = 'sentinel'; from fixture import *; assert Path == 'sentinel'; "
+                f"print({call}('directory/file'))",
                 str(tmp_path),
             ],
             capture_output=True,

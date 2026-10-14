@@ -215,8 +215,9 @@ pathlint fix src/ --dry-run --no-color
 Fixes use AST locations to change expressions while preserving surrounding
 source text, including comments and strings. Imported aliases, named function
 imports, calls inside nested expressions, and expressions inside f-strings are
-supported. Pathlib imports are placed after module docstrings and future imports, and existing
-Pathlib aliases are reused where possible.
+supported. Pathlib imports follow module docstrings and future imports. Existing
+Pathlib aliases are reused where possible; new constructor imports use a private
+alias to preserve wildcard exports.
 
 Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`
 with string-literal arguments. Calls with nonliteral arguments, including variables

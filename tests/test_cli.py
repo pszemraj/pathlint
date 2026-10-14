@@ -259,8 +259,8 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
         "@@ -1,2 +1,3 @@\n"
         " import os\n"
         "-value = os.path.isabs('example')\n"
-        "+from pathlib import Path\n"
-        "+value = Path('example').is_absolute()\n"
+        "+from pathlib import Path as _Path\n"
+        "+value = _Path('example').is_absolute()\n"
     )
     assert chr(92) + "033" not in output.out
     assert "Would make" not in output.out
@@ -271,7 +271,7 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
         ["--fix", "sample.py", *legacy_flags] if legacy_flags is not None else ["fix", "sample.py"]
     )
     assert cli.main([*args, "--quiet"]) == 0
-    assert "Path('example').is_absolute()" in path.read_text(encoding="utf-8")
+    assert "_Path('example').is_absolute()" in path.read_text(encoding="utf-8")
     assert capsys.readouterr() == ("", "")
     assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 0
     assert capsys.readouterr() == ("", "")
@@ -320,7 +320,7 @@ def test_diff_color_requires_terminal_and_respects_option(
     assert chr(92) + "033" not in output
     if not no_color:
         assert f"{chr(27)}[91m-value = os.path.isabs('example'){chr(27)}[0m\n" in output
-        assert f"{chr(27)}[92m+value = Path('example').is_absolute(){chr(27)}[0m\n" in output
+        assert f"{chr(27)}[92m+value = _Path('example').is_absolute(){chr(27)}[0m\n" in output
 
 
 @pytest.mark.parametrize("command", ["check", "fix"])
@@ -534,7 +534,7 @@ def test_module_commands_follow_exit_and_stream_contract(workspace: Path) -> Non
     assert listing.stderr == ""
     preview = invoke(workspace, "fix", "--dry-run", "--quiet")
     assert preview.returncode == 1
-    assert "+from pathlib import Path" in preview.stdout
+    assert "+from pathlib import Path as _Path" in preview.stdout
     assert preview.stderr == ""
     assert path.read_text(encoding="utf-8") == OFFENDING
     fixing = invoke(workspace, "fix", "--quiet")
@@ -562,8 +562,8 @@ def test_fix_crlf_preview_has_clean_lines_and_preserves_file_newlines(
         "@@ -1,2 +1,3 @@",
         " import os",
         "-value = os.path.isabs('example')",
-        "+from pathlib import Path",
-        "+value = Path('example').is_absolute()",
+        "+from pathlib import Path as _Path",
+        "+value = _Path('example').is_absolute()",
     ]
     assert path.read_bytes() == original
     assert cli.main(["fix", "--quiet"]) == 0
@@ -595,7 +595,10 @@ def test_preview_preserves_final_newline_information(
         check=False,
     )
     assert applied.returncode == 0, applied.stderr
-    expected = "import os\nfrom pathlib import Path\nvalue = Path('example').is_absolute()" + suffix
+    expected = (
+        "import os\nfrom pathlib import Path as _Path\nvalue = _Path('example').is_absolute()"
+        + suffix
+    )
     assert path.read_bytes() == expected.encode()
     assert invoke(workspace, "fix", "sample.py", "--dry-run", "--quiet").returncode == 0
 

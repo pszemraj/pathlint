@@ -171,9 +171,9 @@ class _PathFixer(OSPathDetector):
             self.leading_aliases.update(
                 alias.asname or alias.name.split(".")[0] for alias in node.names
             )
-        self.path_name = "Path"
+        self.path_name = "_Path"
         while self.path_name in names:
-            self.path_name = "PathlintPath" if self.path_name == "Path" else self.path_name + "_"
+            self.path_name += "_"
 
     def _defer_body(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp

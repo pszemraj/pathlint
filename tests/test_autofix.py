@@ -61,8 +61,8 @@ class TestFixFileBasic:
         assert count == 2  # import + isabs call
 
         result = test_file.read_text()
-        assert "from pathlib import Path" in result
-        assert "Path('file').is_absolute()" in result
+        assert "from pathlib import Path as _Path" in result
+        assert "_Path('file').is_absolute()" in result
         assert "os.path" not in result
 
     def test_fix_multiple_replacements(self, tmp_path: Path) -> None:
@@ -79,9 +79,9 @@ class TestFixFileBasic:
         assert count == 4  # import + 3 calls
 
         result = test_file.read_text()
-        assert "Path('a').is_absolute()" in result
-        assert "Path('b').name" in result
-        assert "str(Path('c', 'd'))" in result
+        assert "_Path('a').is_absolute()" in result
+        assert "_Path('b').name" in result
+        assert "str(_Path('c', 'd'))" in result
 
     def test_dry_run_no_modification(self, tmp_path: Path) -> None:
         """Dry-run should not modify file."""
@@ -127,10 +127,10 @@ class TestFixFileComplex:
         assert count == 3
 
         result = test_file.read_text()
-        assert "from pathlib import Path" in result
-        assert "Path('file').is_absolute()" in result
-        assert "str(Path('a', 'b'))" in result
-        assert "Path('test').name" in result
+        assert "from pathlib import Path as _Path" in result
+        assert "_Path('file').is_absolute()" in result
+        assert "str(_Path('a', 'b'))" in result
+        assert "_Path('test').name" in result
 
     def test_mixed_os_path_calls(self, tmp_path: Path) -> None:
         """Keep calls whose argument values are unknown."""
@@ -196,7 +196,7 @@ class TestFixFileComplex:
         assert count == 2
 
         result = test_file.read_text()
-        assert "str(Path('root', 'subdir', 'file.txt'))" in result
+        assert "str(_Path('root', 'subdir', 'file.txt'))" in result
 
     def test_multiple_imports(self, tmp_path: Path) -> None:
         """File with multiple imports should add pathlib correctly."""
@@ -210,10 +210,10 @@ class TestFixFileComplex:
 
         lines = result.splitlines()
         # Should add pathlib import after other imports
-        assert "from pathlib import Path" in result
+        assert "from pathlib import Path as _Path" in result
         # Should be before the blank line
         import_section = "\n".join(lines[:4])
-        assert "from pathlib import Path" in import_section
+        assert "from pathlib import Path as _Path" in import_section
 
 
 class TestFixFileEdgeCases:
@@ -229,8 +229,8 @@ class TestFixFileEdgeCases:
 
         result = test_file.read_text()
         assert "os.path.isabs" not in result
-        assert "from pathlib import Path" in result
-        assert "Path(" in result
+        assert "from pathlib import Path as _Path" in result
+        assert "_Path(" in result
         assert ").is_absolute()" in result
 
     def test_multiline_join_call(self, tmp_path: Path) -> None:
@@ -250,7 +250,7 @@ class TestFixFileEdgeCases:
 
         result = test_file.read_text()
         assert "os.path.join" not in result
-        assert "str(Path(" in result
+        assert "str(_Path(" in result
         assert "'root'" in result
         assert "'subdir'" in result
         assert "'file.txt'" in result
@@ -272,7 +272,7 @@ class TestFixFileEdgeCases:
 
         result = test_file.read_text()
         assert "os.path.join" not in result
-        assert "str(Path(" in result
+        assert "str(_Path(" in result
         assert "'root'" in result
         assert "'subdir'" in result
         assert "'file.txt'" in result
@@ -288,7 +288,7 @@ class TestFixFileEdgeCases:
         fix_file(test_file, dry_run=False)
         result = test_file.read_text()
         assert "# os.path.join('a', 'b')" in result
-        assert "str(Path('a', 'b'))" in result
+        assert "str(_Path('a', 'b'))" in result
 
     def test_join_ignores_string_literal(self, tmp_path: Path) -> None:
         """Join calls inside string literals should not be modified."""
@@ -300,7 +300,7 @@ class TestFixFileEdgeCases:
         fix_file(test_file, dry_run=False)
         result = test_file.read_text()
         assert "text = \"os.path.join('a', 'b')\"" in result
-        assert "str(Path('a', 'b'))" in result
+        assert "str(_Path('a', 'b'))" in result
 
     def test_join_in_fstring_expression(self, tmp_path: Path) -> None:
         """Fix expressions inside f-strings without changing literal text."""
@@ -310,7 +310,7 @@ class TestFixFileEdgeCases:
         count = fix_file(test_file, dry_run=False)
         assert count >= 2
         result = test_file.read_text()
-        assert "str(Path('a', 'b'))" in result
+        assert "str(_Path('a', 'b'))" in result
         assert "import os.path" not in result
 
     def test_join_with_nested_commas(self, tmp_path: Path) -> None:
@@ -335,7 +335,7 @@ class TestFixFileEdgeCases:
 
         fix_file(test_file, dry_run=False)
         result = test_file.read_text()
-        assert "str(Path('a', 'b',))" in result
+        assert "str(_Path('a', 'b',))" in result
 
     def test_join_with_star_args(self, tmp_path: Path) -> None:
         """Leave starred argument calls unchanged."""
@@ -371,7 +371,7 @@ class TestFixFileEdgeCases:
         assert count >= 2
 
         result = test_file.read_text(encoding="utf-8")
-        assert "Path('файл').is_absolute()" in result
+        assert "_Path('файл').is_absolute()" in result
         assert "🐍" in result
 
     def test_already_using_pathlib(self, tmp_path: Path) -> None:
@@ -420,9 +420,9 @@ class TestReplacementOrder:
         result = test_file.read_text()
 
         # 2-arg join
-        assert "str(Path('x', 'y'))" in result
+        assert "str(_Path('x', 'y'))" in result
         # 3-arg join
-        assert "str(Path('x', 'y', 'z'))" in result
+        assert "str(_Path('x', 'y', 'z'))" in result
 
     def test_import_replacement_comprehensive(self, tmp_path: Path) -> None:
         """Test all import replacement patterns."""
