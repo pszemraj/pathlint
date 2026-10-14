@@ -778,3 +778,41 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
         assert result.returncode == 0, result.stderr
         assert result.stdout == expected + "\n"
         assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "paths.Path = lambda value: None",
+        "del paths.Path",
+        "paths.Path = lambda value: None\nfrom pathlib import Path",
+        "from pathlib import Path as constructor\nconstructor.exists = lambda self: True",
+        "def writer():\n    paths.Path = lambda value: None\nwriter()",
+    ],
+)
+def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
+    source = (
+        "import os\nimport pathlib as paths\n" + mutation + "\n"
+        "result = os.path.basename('directory/file')\n"
+    )
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    program = (
+        "import pathlib, sys\n"
+        "original_path = pathlib.Path\noriginal_exists = original_path.exists\n"
+        "namespace = {}\ntry:\n"
+        "    exec(compile(sys.argv[1], '<fixture>', 'exec'), namespace)\n"
+        "    print(namespace['result'])\nfinally:\n"
+        "    pathlib.Path = original_path\n    original_path.exists = original_exists\n"
+    )
+    for content in (source, updated):
+        result = subprocess.run(
+            [sys.executable, "-c", program, content],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "file\n"
+        assert result.stderr == ""
