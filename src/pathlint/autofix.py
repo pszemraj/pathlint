@@ -436,6 +436,9 @@ def _insert_import(content: str, name: str = "Path") -> str:
     lines = list(StringIO(content, newline=""))
     newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
     insertion = tree.body[0].lineno - 1 if tree.body else len(lines)
+    if tree.body and getattr(tree.body[0], "decorator_list", []):
+        # Decorator expressions can start below their opening @(... line.
+        insertion = next(index for index, line in enumerate(lines) if line.lstrip().startswith("@"))
     for index, node in enumerate(tree.body):
         if (
             index == 0

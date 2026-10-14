@@ -202,17 +202,68 @@ def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:
 
 def test_import_follows_docstring_and_future_import(tmp_path: Path) -> None:
     original = (
-        '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation."""\n'
+        '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation.\n@literal\n"""\n'
         "from __future__ import annotations\n"
         "import os.path\n"
         f"result = os.path.exists({str(tmp_path)!r})\n"
     )
     updated, _ = fix_content(original)
     assert updated.startswith(
-        '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation."""\n'
+        '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation.\n@literal\n"""\n'
     )
     assert updated.index("from __future__") < updated.index("from pathlib")
     assert run(updated) == run(original)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "@lambda fn: fn\ndef check():\n    from os.path import basename\n"
+        "    return basename('a/b')\nresult = check()\n",
+        "@(\n    lambda fn: fn\n)\ndef check():\n    from os.path import basename\n"
+        "    return basename('a/b')\nresult = check()\n",
+        "from os.path import basename\n@lambda fn: fn\ndef check():\n"
+        "    return basename('a/b')\nresult = check()\n",
+        "from os.path import basename\n@lambda cls: cls\nclass Paths:\n"
+        "    value = basename('a/b')\nresult = Paths.value\n",
+        "from os.path import basename\n@(\n    lambda cls: cls\n)\nclass Paths:\n"
+        "    value = basename('a/b')\nresult = Paths.value\n",
+        "from os.path import basename\n@lambda fn: fn\n@(\n    lambda fn: fn\n)\n"
+        "async def check():\n    return basename('a/b')\n"
+        "result = __import__('asyncio').run(check())\n",
+    ],
+)
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_generated_import_precedes_first_decorator(source: str, newline: str) -> None:
+    """Preserve executable decorated definitions after inserting a Path import."""
+    header = "#!/usr/bin/env python3\n# coding: utf-8\n"
+    original = (header + source).replace("\n", newline)
+    updated, count = fix_content(original)
+    assert count > 0
+    assert updated.startswith(header.replace("\n", newline))
+    assert updated.index("from pathlib") < updated.index("@")
+    assert run(updated) == run(original) == "b"
+    assert fix_content(updated) == (updated, 0)
+
+
+def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
+    """Execute the persisted CLI fix for a decorated first definition."""
+    source = (
+        "from os.path import basename\n@lambda fn: fn\ndef check():\n"
+        "    return basename('a/b')\nresult = check()\n"
+    )
+    target = tmp_path / "decorated.py"
+    target.write_text(source, encoding="utf-8")
+    process = subprocess.run(
+        [sys.executable, "-m", "pathlint", "fix", str(target)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert process.returncode == 0, process.stderr
+    persisted = target.read_text(encoding="utf-8")
+    assert persisted == fix_content(source)[0]
+    assert run(persisted) == run(source) == "b"
 
 
 def test_partial_named_import_keeps_unsupported_function(tmp_path: Path) -> None:
