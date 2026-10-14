@@ -212,6 +212,44 @@ def test_annotated_assignment_binds_before_annotation() -> None:
         assert namespace["result"] == "custom"
 
 
+@pytest.mark.parametrize("definition", ["def", "async def"])
+@pytest.mark.parametrize("parameter", ["arg", "*, arg"])
+def test_function_defaults_bind_before_annotations(definition: str, parameter: str) -> None:
+    source = (
+        "import os\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        f"{definition} f({parameter}: os.path.exists('unlikely-name') = (os := custom)):\n"
+        "    pass\n"
+        "result = f.__annotations__['arg']\n"
+    )
+    assert offenses(source) == {}
+    updated, count = fix_content(source)
+    assert count == 0
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<definition>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == "custom"
+
+
+@pytest.mark.parametrize("parameter", ["arg=(os := os)", "arg: (os := os) = None"])
+def test_definition_walrus_does_not_become_function_local(parameter: str) -> None:
+    source = (
+        "import os\n"
+        f"def f({parameter}):\n"
+        "    return os.path.exists('unlikely-name')\n"
+        "import os\n"
+        "result = f()\n"
+    )
+    assert set(offenses(source)) == {3}
+    updated, count = fix_content(source)
+    assert count == 1
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<definition>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] is False
+
+
 @pytest.mark.parametrize(
     "expression",
     [

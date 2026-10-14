@@ -158,7 +158,17 @@ class OSPathDetector(ast.NodeVisitor):
             self.scopes, self.scope_kinds = scopes.copy(), kinds.copy()
             self.scope_globals = globals_.copy()
             names = _ScopeNames()
-            names.visit(function.args)
+            names.names.update(
+                argument.arg
+                for argument in (
+                    *function.args.posonlyargs,
+                    *function.args.args,
+                    *function.args.kwonlyargs,
+                    function.args.vararg,
+                    function.args.kwarg,
+                )
+                if argument
+            )
             body = [function.body] if isinstance(function, ast.Lambda) else function.body
             for statement in body:
                 names.visit(statement)
@@ -286,6 +296,21 @@ class OSPathDetector(ast.NodeVisitor):
         )
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_arguments(self, node: ast.arguments) -> None:
+        """Visit function defaults before their subsequently evaluated annotations."""
+        for default in (*node.defaults, *node.kw_defaults):
+            if default:
+                self.visit(default)
+        for argument in (
+            *node.posonlyargs,
+            *node.args,
+            node.vararg,
+            *node.kwonlyargs,
+            node.kwarg,
+        ):
+            if argument and argument.annotation:
+                self.visit(argument.annotation)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         """Visit lambda arguments and defer its body for lexical analysis."""
