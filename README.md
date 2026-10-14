@@ -242,7 +242,7 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/pszemraj/pathlint
-    rev: v0.1.0  # Use the release you want to pin
+    rev: v0.3.0  # Use the release you want to pin
     hooks:
       - id: pathlint
         args: [--exclude, vendor, --exclude, backups]
