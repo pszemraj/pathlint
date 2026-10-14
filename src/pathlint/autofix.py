@@ -95,6 +95,16 @@ class _PathFixer(OSPathDetector):
         self.count = 0
         self.needs_import = False
         self.debug_calls: set[ast.Call] = set()
+        # Annotation evaluation can be postponed, including by default on Python 3.14.
+        # Keep expressions intact without imposing definition-time bindings on them.
+        self.annotation_calls = {
+            call
+            for node in ast.walk(tree)
+            for annotation in (getattr(node, "annotation", None), getattr(node, "returns", None))
+            if annotation is not None
+            for call in ast.walk(annotation)
+            if isinstance(call, ast.Call)
+        }
         # Deferred bodies may run before later imports, or between rebindings.
         # Same-spelling writes in unrelated scopes also exclude an alias: avoiding
         # uncertain migrations needs no execution-order or call-graph analysis.
@@ -372,7 +382,7 @@ class _PathFixer(OSPathDetector):
         """
         origin = self.resolve(node.func)
         self.generic_visit(node)
-        if node in self.debug_calls:
+        if node in self.debug_calls or node in self.annotation_calls:
             return
         if not origin or not origin.startswith("os.path."):
             return

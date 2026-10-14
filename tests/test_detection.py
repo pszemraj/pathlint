@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import sys
 from textwrap import dedent
+from types import ModuleType
+from typing import get_type_hints
 
 import pytest
 
@@ -396,6 +398,77 @@ def test_annotated_assignment_binds_before_annotation() -> None:
         namespace = {}
         exec(compile(content, "<annotation>", "exec", dont_inherit=True), namespace)
         assert namespace["result"] == "custom"
+
+
+@pytest.mark.parametrize("future", ["", "from __future__ import annotations\n"])
+@pytest.mark.parametrize(
+    ("statement", "owner", "key"),
+    [
+        ("value: os.path.isabs('file')", None, "value"),
+        ("class Example:\n    value: os.path.isabs('file')", "Example", "value"),
+        ("def f(arg: os.path.isabs('file')): pass", "f", "arg"),
+        ("async def f(arg: os.path.isabs('file')): pass", "f", "arg"),
+        ("def f() -> os.path.isabs('file'): pass", "f", "return"),
+    ],
+)
+def test_annotation_fixes_preserve_later_type_hint_evaluation(
+    future: str, statement: str, owner: str | None, key: str
+) -> None:
+    source = (
+        f"{future}import os\nfrom types import SimpleNamespace\n{statement}\n"
+        "os = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: int))\n"
+    )
+    assert offenses(source)
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    for content in (source, updated):
+        module = ModuleType("annotation_sample")
+        exec(compile(content, "<annotations>", "exec", dont_inherit=True), vars(module))
+        target = getattr(module, owner) if owner else module
+        expected = int if future or sys.version_info >= (3, 14) else False
+        assert get_type_hints(target, globalns=vars(module)) == {key: expected}
+
+
+@pytest.mark.parametrize("future", ["", "from __future__ import annotations\n"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "value: os.path.isabs('file') = os.path.isabs('file')",
+        "class Example:\n    value: os.path.isabs('file') = os.path.isabs('file')",
+        "obj.value: os.path.isabs('file') = os.path.isabs('file')",
+        "values[0]: os.path.isabs('file') = os.path.isabs('file')",
+        "def f(arg: os.path.isabs('file') = os.path.isabs('file')): pass",
+        "def f(arg: os.path.isabs('file'), /, *, kw: os.path.isabs('file')):\n"
+        "    return os.path.isabs('file')",
+        "def f(*args: os.path.isabs('file'), **kwargs: os.path.isabs('file')):\n"
+        "    return os.path.isabs('file')",
+        "def f() -> os.path.isabs('file'):\n    return os.path.isabs('file')",
+        "def f():\n    value: os.path.isabs('file') = os.path.isabs('file')",
+    ],
+)
+def test_annotations_stay_intact_while_ordinary_calls_are_fixed(
+    future: str, statement: str
+) -> None:
+    source = f"{future}import os\n{statement}\n"
+    updated, count = fix_content(source)
+    assert count == 1
+    assert updated.count("os.path.isabs('file')") == source.count("os.path.isabs('file')") - 1
+    assert "Path('file').is_absolute()" in updated
+    annotations = []
+    for content in (source, updated):
+        annotations.append(
+            [
+                ast.dump(annotation)
+                for node in ast.walk(ast.parse(content))
+                for annotation in (
+                    getattr(node, "annotation", None),
+                    getattr(node, "returns", None),
+                )
+                if annotation is not None
+            ]
+        )
+    assert annotations[0] == annotations[1]
+    assert offenses(updated)
 
 
 @pytest.mark.parametrize("definition", ["def", "async def"])

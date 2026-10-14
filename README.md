@@ -187,7 +187,9 @@ origins. Stable imports inside the body can still be migrated. This is a static
 check, not full Python execution analysis.
 
 Expressions in annotations are checked too. Valid `os.PathLike` annotations
-are not `os.path` usage and are not flagged.
+are not `os.path` usage and are not flagged. The fixer leaves annotation
+expressions unchanged: postponed annotations and Python 3.14's lazy annotations
+can resolve names after their bindings change.
 
 ## Auto-fix (experimental)
 
@@ -219,10 +221,11 @@ These include empty paths, trailing separators, named-user expansion, and rooted
 literals passed to `isabs` whose interpretation can differ under Windows path rules.
 Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes are assigned or deleted are also left
-unchanged. Fixes retain imports when
-annotations or `__all__` may reference them, and avoid constructors affected by
-Pathlib mutations. Sources containing wildcard imports are left unchanged because
-their exports can overwrite names used by a fix. Sources using type parameters or
+unchanged. Calls outside annotation expressions remain eligible for fixes.
+Fixes retain imports when annotations or `__all__` may reference them, and avoid
+constructors affected by Pathlib mutations. Sources containing wildcard imports
+are left unchanged because their exports can overwrite names used by a fix.
+Sources using type parameters or
 type aliases are also left unchanged because their annotation scopes and lazy
 values are not analyzed by the fixer. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
