@@ -213,6 +213,10 @@ def test_reassigned_global_alias_is_not_rewritten() -> None:
         "import sys; import os.path\nresult = os.path.exists('missing')\n",
         "def check():\n    import os.path\n    return os.path.exists('missing')\nresult = check()\n",
         "def check():\n    import os.path\nresult = check()\n",
+        "import os.path as osp; result = osp.exists('missing'); del osp\n",
+        "from os.path import exists as present\nresult = present('missing')\ndel present\n",
+        "from os import path as paths\nresult = paths.exists('missing')\ndel paths\n",
+        "import os.path\nresult = os.path.exists('missing')\ndel os\n",
     ],
 )
 def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:

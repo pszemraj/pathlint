@@ -425,10 +425,11 @@ def _clean_imports(content: str) -> tuple[str, int]:
     """
     tree = ast.parse(content)
     source = _Source(content)
-    loaded = {
+    # A later del still needs its imported binding after calls are rewritten.
+    referenced = {
         node.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
     }
     os_path_used = any(
         isinstance(node, ast.Attribute)
@@ -451,7 +452,7 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 if (
                     alias.name == "os.path"
                     and not alias.asname
-                    and name in loaded
+                    and name in referenced
                     and not os_path_used
                 ):
                     remaining.append(ast.alias(name="os", asname=None))
@@ -464,7 +465,7 @@ def _clean_imports(content: str) -> tuple[str, int]:
                     and not node.level
                     and (node.module == "os.path" or (node.module == "os" and alias.name == "path"))
                 )
-            if removable and name not in loaded:
+            if removable and name not in referenced:
                 node_count += 1
             else:
                 remaining.append(alias)
