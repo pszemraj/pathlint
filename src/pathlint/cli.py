@@ -18,11 +18,8 @@ from pathlint.linter import _lint_file
 def _legacy_args(argv: list[str]) -> list[str]:
     """Normalize legacy path and fix flags into an explicit command.
 
-    Args:
-        argv: Command-line arguments without the executable name.
-
-    Returns:
-        Arguments with a check or fix command, or unchanged command/help/version args.
+    :param list[str] argv: Command-line arguments without the executable name.
+    :return list[str]: Arguments with a check/fix command, or unchanged command/help/version args.
     """
     if argv and argv[0] in {"check", "fix", "files", "-h", "--help", "--version"}:
         return argv
@@ -49,11 +46,8 @@ def _legacy_args(argv: list[str]) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse canonical commands and legacy invocation aliases.
 
-    Args:
-        argv: Arguments without the executable name; None uses sys.argv[1:].
-
-    Returns:
-        Parsed options with a command and at least one input path.
+    :param list[str] | None argv: Arguments without the executable name; None uses sys.argv[1:].
+    :return argparse.Namespace: Parsed options with a command and at least one input path.
     """
     parser = argparse.ArgumentParser(
         prog="pathlint",
@@ -139,12 +133,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _error(path: Path, error: Exception | str) -> dict[str, Any]:
     """Build a report entry for a discovery, read, or parse failure.
 
-    Args:
-        path: Input path associated with the failure.
-        error: Exception or discovery error message.
-
-    Returns:
-        Display path, optional syntax-error line number, and error message.
+    :param Path path: Input path associated with the failure.
+    :param Exception | str error: Exception or discovery error message.
+    :return dict[str, Any]: Display path, optional syntax-error line number, and error message.
     """
     return {
         "path": display_path(path),
@@ -156,8 +147,7 @@ def _error(path: Path, error: Exception | str) -> dict[str, Any]:
 def _print_errors(errors: list[dict[str, Any]]) -> None:
     """Print collected error locations and messages to stderr.
 
-    Args:
-        errors: Report entries containing path, line, and message fields.
+    :param list[dict[str, Any]] errors: Report entries with path, line, and message fields.
     """
     for error in errors:
         location = error["path"]
@@ -177,16 +167,13 @@ def _check(
 ) -> int:
     """Lint selected files, report findings, and prioritize errors in the status.
 
-    Args:
-        files: Selected Python files to read and lint.
-        errors: Discovery errors; read and parse failures are appended here.
-        output_format: Report format, either text or json.
-        quiet: Suppress text summaries while retaining findings and errors.
-        stats: Include up to five offenders in JSON or non-quiet text output.
-        aggressive: Include the optional message for violations in non-quiet text.
-
-    Returns:
-        2 for errors, 1 for violations, or 0 for a clean or empty selection.
+    :param list[Path] files: Selected Python files to read and lint.
+    :param list[dict[str, Any]] errors: Discovery errors; read and parse failures are appended here.
+    :param str output_format: Report format, either text or json.
+    :param bool quiet: Suppress text summaries while retaining findings and errors.
+    :param bool stats: Include up to five offenders in JSON or non-quiet text output.
+    :param bool aggressive: Include the optional message for violations in non-quiet text.
+    :return int: 2 for errors, 1 for violations, or 0 for a clean or empty selection.
     """
     diagnostics = []
     counts: dict[str, int] = {}
@@ -265,15 +252,12 @@ def _fix(
 ) -> int:
     """Apply experimental fixes or print proposed changes as unified diffs.
 
-    Args:
-        files: Selected Python files to transform.
-        errors: Discovery errors; read, parse, and write failures are appended here.
-        dry_run: Print diffs without writing files.
-        quiet: Suppress fix messages and summaries while retaining diffs and errors.
-        no_color: Disable ANSI diff colors even on an interactive terminal.
-
-    Returns:
-        2 for errors, 1 for proposed dry-run edits, or 0 otherwise.
+    :param list[Path] files: Selected Python files to transform.
+    :param list[dict[str, Any]] errors: Discovery errors; read, parse, and write failures are appended here.
+    :param bool dry_run: Print diffs without writing files.
+    :param bool quiet: Suppress fix messages and summaries while retaining diffs and errors.
+    :param bool no_color: Disable ANSI diff colors even on an interactive terminal.
+    :return int: 2 for errors, 1 for proposed dry-run edits, or 0 otherwise.
     """
     from pathlint.autofix import fix_content
 
@@ -323,11 +307,8 @@ def _fix(
 def main(argv: list[str] | None = None) -> int:
     """Run a command and return its exit status.
 
-    Args:
-        argv: Arguments without the executable name; None uses sys.argv[1:].
-
-    Returns:
-        The command's status, 130 on interruption, or 1 for a broken output pipe.
+    :param list[str] | None argv: Arguments without the executable name; None uses sys.argv[1:].
+    :return int: The command's status, 130 on interruption, or 1 for a broken output pipe.
     """
     try:
         args = parse_args(argv)

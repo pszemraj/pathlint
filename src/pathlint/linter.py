@@ -161,8 +161,7 @@ class OSPathDetector(ast.NodeVisitor):
     def resolve_name(self, name: str) -> str | None:
         """Resolve an imported name in the current lexical scope.
 
-        Returns:
-            The import's original spelling, or None for an unbound or shadowed name.
+        :return str | None: Import spelling, or None for an unbound or shadowed name.
         """
         for index in range(len(self.scopes) - 1, -1, -1):
             if self.scope_kinds[index] == "class" and index != len(self.scopes) - 1:
@@ -174,8 +173,7 @@ class OSPathDetector(ast.NodeVisitor):
     def resolve(self, node: ast.AST) -> str | None:
         """Resolve an imported name or attribute to its original spelling.
 
-        Returns:
-            The qualified import spelling, or None if the expression cannot resolve.
+        :return str | None: Qualified import spelling, or None if unresolved.
         """
         if isinstance(node, ast.Name):
             return self.resolve_name(node.id)
@@ -343,8 +341,7 @@ class OSPathDetector(ast.NodeVisitor):
 def _lint_file(filepath: Path) -> list[tuple[int, str]]:
     """Read and parse a Python file, propagating read and syntax errors.
 
-    Returns:
-        One (line number, stripped source) tuple per offending line, in line order.
+    :return list[tuple[int, str]]: One (line, stripped source) per offending line, sorted.
     """
     content = filepath.read_text(encoding="utf-8")
     tree = ast.parse(content, filename=str(filepath))
@@ -358,8 +355,7 @@ def _lint_file(filepath: Path) -> list[tuple[int, str]]:
 def lint_file(filepath: Path) -> list[tuple[int, str]]:
     """Lint a file, reporting read and syntax errors to stderr.
 
-    Returns:
-        Sorted (line number, stripped source) findings, or an empty list on error.
+    :return list[tuple[int, str]]: Sorted (line, stripped source) findings, or [] on error.
     """
     try:
         return _lint_file(filepath)
@@ -373,12 +369,9 @@ def lint_file(filepath: Path) -> list[tuple[int, str]]:
 def find_python_files(paths: list[str], exclude_patterns: set[str] | None = None) -> set[Path]:
     """Collect Python files and report discovery errors to stderr.
 
-    Args:
-        paths: File or directory inputs to discover using automatic Git ignores.
-        exclude_patterns: Replacement built-in exclusions; None uses the defaults.
-
-    Returns:
-        The deduplicated set of selected Python files, including any partial results.
+    :param list[str] paths: File or directory inputs, using automatic Git ignores.
+    :param set[str] | None exclude_patterns: Replacement exclusions; None uses defaults.
+    :return set[Path]: Selected Python files, including any partial results.
     """
     from pathlint.discovery import DEFAULT_EXCLUDES, discover_files
 
@@ -394,11 +387,8 @@ def find_python_files(paths: list[str], exclude_patterns: set[str] | None = None
 def main(argv: list[str] | None = None) -> int:
     """Forward the original entry point to the shared CLI.
 
-    Args:
-        argv: CLI arguments, or None to use the process arguments.
-
-    Returns:
-        The shared CLI's exit status.
+    :param list[str] | None argv: CLI arguments, or None to use process arguments.
+    :return int: The shared CLI's exit status.
     """
     from pathlint.cli import main as cli_main
 

@@ -17,11 +17,8 @@ DEFAULT_EXCLUDES = frozenset(
 def display_path(filepath: Path) -> str:
     """Format a path relative to the working directory when possible.
 
-    Args:
-        filepath: File or directory path to display.
-
-    Returns:
-        A POSIX-style relative path, or the supplied path if it is outside cwd.
+    :param Path filepath: File or directory path to display.
+    :return str: A POSIX-style relative path, or the supplied path if it is outside cwd.
     """
     try:
         return filepath.relative_to(Path.cwd()).as_posix()
@@ -35,13 +32,10 @@ def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = Fa
     Slashless patterns match names; path patterns match working-directory-relative
     or absolute paths. A trailing slash restricts a pattern to directories.
 
-    Args:
-        filepath: Absolute file or directory path to test.
-        patterns: Name or path patterns; directory matches exclude descendants.
-        directory: Treat filepath itself as a directory for trailing-slash patterns.
-
-    Returns:
-        True if any pattern matches the path or one of its ancestor directories.
+    :param Path filepath: Absolute file or directory path to test.
+    :param Sequence[str] patterns: Name or path patterns; directory matches exclude descendants.
+    :param bool directory: Treat filepath itself as a directory for trailing-slash patterns.
+    :return bool: True if a pattern matches the path or one of its ancestor directories.
     """
     cwd = Path.cwd()
     for candidate in (filepath, *filepath.parents):
@@ -76,15 +70,11 @@ def discover_files(
     apply to every input. Directory scans use Git inside worktrees when enabled
     and available; otherwise they walk the filesystem, pruning excluded directories.
 
-    Args:
-        paths: Files or directories to select from.
-        exclude_patterns: Explicit name or path exclusions, including for named files.
-        default_excludes: Directory names excluded during automatic discovery.
-        respect_gitignore: Use Git's tracked and nonignored untracked file listing
-            inside worktrees when Git is available.
-
-    Returns:
-        Sorted absolute file paths and pairs of failing paths and error messages.
+    :param Sequence[Path] paths: Files or directories to select from.
+    :param Sequence[str] exclude_patterns: Explicit name or path exclusions, including for named files.
+    :param Collection[str] default_excludes: Directory names excluded during automatic discovery.
+    :param bool respect_gitignore: Use Git's tracked and nonignored untracked files inside worktrees when available.
+    :return tuple[list[Path], list[tuple[Path, str]]]: Sorted absolute files and failing path/message pairs.
     """
     files: set[Path] = set()
     errors: list[tuple[Path, str]] = []
@@ -94,13 +84,10 @@ def discover_files(
     def excluded(candidate: Path, alias: Path, *, directory: bool = False) -> bool:
         """Check default directory exclusions and both spellings of explicit patterns.
 
-        Args:
-            candidate: Resolved path being considered for automatic discovery.
-            alias: Input path spelling before resolving symlinks.
-            directory: Whether candidate is a directory.
-
-        Returns:
-            True if default or explicit exclusions reject the candidate.
+        :param Path candidate: Resolved path being considered for automatic discovery.
+        :param Path alias: Input path spelling before resolving symlinks.
+        :param bool directory: Whether candidate is a directory.
+        :return bool: True if default or explicit exclusions reject the candidate.
         """
         directories = candidate if directory else candidate.parent
         return (
@@ -112,16 +99,14 @@ def discover_files(
     def walk(root: Path, alias: Path) -> None:
         """Walk a directory, prune exclusions, and scan nested Git repositories.
 
-        Args:
-            root: Resolved directory to traverse.
-            alias: Directory spelling before resolving symlinks.
+        :param Path root: Resolved directory to traverse.
+        :param Path alias: Directory spelling before resolving symlinks.
         """
 
         def onerror(error: OSError) -> None:
             """Collect a filesystem traversal failure in the discovery errors.
 
-            Args:
-                error: Failure supplied by os.walk.
+            :param OSError error: Failure supplied by os.walk.
             """
             errors.append((Path(error.filename or root), str(error)))
 
@@ -145,9 +130,8 @@ def discover_files(
     def scan(root: Path, alias: Path) -> None:
         """Select a directory's files through Git or a filesystem walk.
 
-        Args:
-            root: Resolved directory to scan once for each input spelling.
-            alias: Directory spelling before resolving symlinks.
+        :param Path root: Resolved directory to scan once for each input spelling.
+        :param Path alias: Directory spelling before resolving symlinks.
         """
         if (root, alias) in visited:
             return
