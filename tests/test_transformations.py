@@ -397,21 +397,56 @@ def test_unicode_offsets_and_multiline_comments(
     ]
 
 
-def test_parenthesized_callable_comments_are_preserved() -> None:
+@pytest.mark.parametrize(
+    ("imports", "callee", "argument", "changes", "expected"),
+    [
+        ("import os.path as osp", "osp.isabs", "'directory/file'", True, False),
+        (
+            "import os.path as osp",
+            "osp # inside callable 🐍\n        .isabs",
+            "'directory/file'",
+            False,
+            False,
+        ),
+        (
+            "import os as osp",
+            "osp # module comment\n        .path # path comment\n        .basename",
+            "'a/b'",
+            False,
+            "b",
+        ),
+        (
+            "import os as osp",
+            "osp # module comment\n        .path # path comment\n        .basename",
+            "osp.path.basename('a/b')",
+            True,
+            "b",
+        ),
+    ],
+)
+def test_parenthesized_callable_comments_are_preserved(
+    imports: str, callee: str, argument: str, changes: bool, expected: object
+) -> None:
     original = (
-        "import os.path as osp\n"
+        f"{imports}\n"
         "result = (\n"
         "    (  # before callable 🐍 (\n"
-        "        osp.isabs\n"
+        f"        {callee}\n"
         "    )  # after callable (\n"
-        "    ('directory/file')\n"
+        f"    ({argument})\n"
         ")\n"
     )
     updated, count = fix_content(original)
-    assert count > 0
-    assert "# before callable 🐍 (" in updated
-    assert "# after callable (" in updated
-    assert run(updated) == run(original)
+    assert bool(count) is changes
+    if not changes:
+        assert updated == original
+    for line in original.splitlines():
+        if "#" in line:
+            assert line[line.index("#") :] in updated
+    if "#" in callee:
+        assert callee in updated
+    assert run(updated) == run(original) == expected
+    assert fix_content(updated) == (updated, 0)
 
 
 def test_import_follows_docstring_and_future_import() -> None:

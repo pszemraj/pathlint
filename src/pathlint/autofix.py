@@ -434,6 +434,8 @@ class _PathFixer(OSPathDetector):
             return
         start, end = self.source.span(node)
         function_start, function_end = self.source.span(node.func)
+        if "#" in self.source.content[function_start:function_end]:
+            return
         constructor = self.constructor()
         # Replace only the callee span, retaining wrapping parentheses and comments.
         call = (

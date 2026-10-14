@@ -212,10 +212,11 @@ Pathlib aliases are reused where possible.
 
 Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`.
 Unsupported references retain their imports.
-Keyword arguments, starred arguments, literal file descriptors or byte paths,
-and known inexact literal forms are left unchanged. These include empty paths,
-trailing separators, named-user expansion, and rooted literals passed to `isabs`
-whose interpretation can differ under Windows path rules. Calls with uncertain branch,
+Keyword arguments, starred arguments, call targets containing comments, literal
+file descriptors, byte paths, and known inexact literal forms are left unchanged.
+These include empty paths, trailing separators, named-user expansion, and rooted
+literals passed to `isabs` whose interpretation can differ under Windows path rules.
+Calls with uncertain branch,
 exception, match, or loop bindings and methods whose `os.path` attributes are
 assigned or deleted are also left unchanged. Fixes retain imports when
 annotations or `__all__` may reference them, and avoid constructors affected by
