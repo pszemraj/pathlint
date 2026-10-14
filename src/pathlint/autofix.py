@@ -165,11 +165,13 @@ class _PathFixer(OSPathDetector):
         self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
 
     def resolve_name(self, name: str) -> str | None:
-        """Exclude rebound aliases from deferred generator expressions.
+        """Exclude rebound aliases from deferred function and generator bodies.
 
         :return str | None: Import spelling, or None for a rebound or unresolved name.
         """
-        if "generator" in self.scope_kinds and name in self.deferred_rebindings:
+        if name in self.deferred_rebindings and any(
+            kind in {"function", "generator"} for kind in self.scope_kinds
+        ):
             return None
         return super().resolve_name(name)
 

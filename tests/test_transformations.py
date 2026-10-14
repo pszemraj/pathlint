@@ -314,6 +314,10 @@ def test_imports_defined_after_function_are_not_rewritten(source: str) -> None:
         "    def check():\n        return osp.exists('file')\n"
         "    writer()\n    return check()\n"
         "result = outer()\n",
+        "def outer():\n    import os.path as osp\n"
+        "    def writer():\n        nonlocal osp\n        osp = custom\n"
+        "    writer()\n    return osp.exists('file')\n"
+        "result = outer()\n",
         "import os.path as osp\n"
         "checks = (osp.exists('file') for _ in [0])\n"
         "osp = custom\nresult = next(checks)\n",
@@ -376,9 +380,15 @@ def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> No
     "source",
     [
         "import os\ndef check():\n    return os.path.exists('missing')\nresult = check()\n",
+        "def check():\n    import os\n    return os.path.exists('missing')\nresult = check()\n",
         "from os.path import exists\n"
         "def check():\n    return exists('missing')\n"
         "result = check()\n",
+        "import os\n"
+        "def outer():\n    from pathlib import Path\n"
+        "    def writer():\n        nonlocal Path\n        Path = lambda value: None\n"
+        "    writer()\n    return os.path.exists('missing')\n"
+        "result = outer()\n",
         "import os.path as osp\n"
         "checks = (osp.exists('missing') for _ in [0])\nresult = next(checks)\n",
         "import os.path as osp\n"
@@ -768,7 +778,7 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
             "import os\n        result = os.path.exists('missing')",
             "return result",
             False,
-            True,
+            False,
         ),
         (
             "[True]",

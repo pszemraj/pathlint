@@ -179,10 +179,11 @@ callback = os.path.join
 Pathlint resolves imported names in function, class, and comprehension scopes
 so ordinary local shadowing is not mistaken for `os.path`. Function bodies
 use the enclosing scope's final bindings for detection; dynamic rebinding can
-prevent resolution. Fixes require enclosing imports to exist when the function
-or lambda is defined, and conservatively skip aliases rebound anywhere in the
-file, including imports with conflicting origins. Imports inside the body can
-still be migrated. This is a static check, not full Python execution analysis.
+prevent resolution. Fixes in deferred bodies require enclosing imports to exist
+when the function, lambda, or generator is created, and conservatively skip
+aliases rebound anywhere in the file, including imports with conflicting
+origins. Stable imports inside the body can still be migrated. This is a static
+check, not full Python execution analysis.
 
 Expressions in annotations are checked too. Valid `os.PathLike` annotations
 are not `os.path` usage and are not flagged.
