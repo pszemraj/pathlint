@@ -342,7 +342,10 @@ class _PathFixer(OSPathDetector):
             return
         if not origin or not origin.startswith("os.path."):
             return
-        if any(changed.startswith("pathlib.") for changed in self.mutated_attributes):
+        if any(
+            changed == "pathlib" or changed.startswith("pathlib.")
+            for changed in self.mutated_attributes
+        ):
             # Path also depends on inherited and platform-specific pathlib classes.
             return
         function = origin.removeprefix("os.path.")

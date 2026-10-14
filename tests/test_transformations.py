@@ -2269,6 +2269,50 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
 @pytest.mark.parametrize(
     ("body", "expected", "changes"),
     [
+        *[
+            (
+                "from types import ModuleType\n"
+                "class Custom(ModuleType):\n"
+                "    @property\n    def basename(self):\n"
+                "        return lambda value: 'custom'\n"
+                + mutation
+                + "\nresult = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for mutation in [
+                "osp.__class__ = Custom",
+                "osp.__class__: object = Custom",
+                "alias = osp\nalias.__class__ = Custom",
+                "def writer():\n    osp.__class__ = Custom\nwriter()",
+            ]
+        ],
+        *[
+            (
+                "import os\nfrom types import ModuleType\n"
+                "class Custom(ModuleType):\n"
+                "    @property\n    def path(self):\n"
+                "        return SimpleNamespace(basename=lambda value: 'custom')\n"
+                + mutation
+                + "\nresult = os.path.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for mutation in ["os.__class__ = Custom", "alias = os\nalias.__class__ = Custom"]
+        ],
+        *[
+            (
+                "import pathlib as paths\nfrom types import ModuleType\n"
+                "class Custom(ModuleType):\n"
+                "    @property\n    def Path(self):\n"
+                "        return lambda value: SimpleNamespace(name='custom')\n"
+                + mutation
+                + "\nresult = osp.basename('directory/file')\n",
+                "file",
+                False,
+            )
+            for mutation in ["paths.__class__ = Custom", "alias = paths\nalias.__class__ = Custom"]
+        ],
         (
             "osp.basename = lambda value: 'custom'\nresult = osp.basename('directory/file')\n",
             "custom",
@@ -2581,14 +2625,20 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
     assert bool(count) is changes
     # Isolate module mutations and restore before subprocess coverage shuts down.
     program = (
-        "import os, sys\n"
+        "import os, sys, pathlib\n"
+        "original_os_class = os.__class__\n"
         "original_path = os.path\noriginal_basename = original_path.basename\n"
+        "original_path_class = original_path.__class__\n"
+        "original_pathlib_class = pathlib.__class__\n"
         "original_code = original_basename.__code__\n"
         "original_defaults = original_basename.__defaults__\n"
         "original_dict = original_basename.__dict__.copy()\n"
         "namespace = {}\ntry:\n"
         "    exec(compile(sys.argv[1], '<fixture>', 'exec'), namespace)\n"
         "    print(namespace['result'])\nfinally:\n"
+        "    os.__class__ = original_os_class\n"
+        "    original_path.__class__ = original_path_class\n"
+        "    pathlib.__class__ = original_pathlib_class\n"
         "    os.path = original_path\n    original_path.basename = original_basename\n"
         "    original_basename.__code__ = original_code\n"
         "    original_basename.__defaults__ = original_defaults\n"

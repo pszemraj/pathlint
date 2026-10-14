@@ -246,6 +246,8 @@ passed to calls, returned, yielded, or used by context managers or match pattern
 These copies do not establish bindings for detection or migration of copied calls.
 Mutation origins are conservative across scopes and statement order; copies of
 callable internals can also exclude fixes for their exported parent.
+Assigning an imported module's `__class__` invalidates all of its lookups because
+module subclasses can override attributes with descriptors.
 Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute

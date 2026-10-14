@@ -1070,6 +1070,74 @@ def test_replacing_path_module_invalidates_descendants() -> None:
 
 
 @pytest.mark.parametrize(
+    ("import_statement", "target", "changed"),
+    [
+        ("import os as module", "module", "os"),
+        ("import os as module", "module.path", "os.path"),
+        ("import os.path as module", "module", "os.path"),
+        ("from os import path as module", "module", "os.path"),
+        ("import pathlib as module", "module", "pathlib"),
+    ],
+)
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "{target}.__class__ = Custom",
+        "{target}.__class__: object = Custom",
+        "{target}.__class__ += Custom",
+        "del {target}.__class__",
+    ],
+)
+def test_module_class_mutations_invalidate_sibling_lookups(
+    import_statement: str, target: str, changed: str, mutation: str
+) -> None:
+    source = (
+        f"{import_statement}\n{mutation.format(target=target)}\n"
+        "import os.path as osp\nfrom os.path import basename\n"
+        "import pathlib as paths\nfrom pathlib import Path\n"
+    )
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {changed}
+    affected = (
+        ("paths", "paths.Path", "Path")
+        if changed == "pathlib"
+        else ("osp", "osp.basename", "osp.dirname", "basename")
+    )
+    for expression in affected:
+        assert detector.resolve(ast.parse(expression, mode="eval").body) is None
+    unaffected = "osp.dirname" if changed == "pathlib" else "paths.Path"
+    expected = "os.path.dirname" if changed == "pathlib" else "pathlib.Path"
+    assert detector.resolve(ast.parse(unaffected, mode="eval").body) == expected
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "changed", "expression"),
+    [
+        ("import os as module", "os", "os.path.basename"),
+        ("import os.path as module", "os.path", "os.path.basename"),
+        ("import pathlib as module", "pathlib", "paths.Path"),
+    ],
+)
+@pytest.mark.parametrize(
+    "copy",
+    [
+        "copy = module\ncopy.__class__ = Custom",
+        "def mutate(copy=module):\n    copy.__class__ = Custom",
+    ],
+)
+def test_copied_module_class_mutations_retain_whole_module_origins(
+    import_statement: str, changed: str, expression: str, copy: str
+) -> None:
+    source = f"{import_statement}\n{copy}\nimport os\nimport pathlib as paths\n"
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {changed}
+    assert detector.resolve(ast.parse(expression, mode="eval").body) is None
+    assert detector.resolve(ast.parse("copy", mode="eval").body) is None
+
+
+@pytest.mark.parametrize(
     ("import_statement", "target"),
     [
         ("import os", "os.path.basename"),
@@ -1086,6 +1154,7 @@ def test_replacing_path_module_invalidates_descendants() -> None:
         ("{target}.__defaults__ += defaults", "__defaults__"),
         ("del {target}.__defaults__", "__defaults__"),
         ("{target}.__dict__ = namespace", "__dict__"),
+        ("{target}.__class__ = Custom", "__class__"),
     ],
 )
 def test_callable_mutations_invalidate_function_without_invalidating_module(

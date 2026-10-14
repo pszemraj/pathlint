@@ -475,13 +475,20 @@ class OSPathDetector(ast.NodeVisitor):
             self._record(node)
         self.generic_visit(node)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            # Conditional imports can look certain in sequential traversal. Retain
-            # earlier origins conservatively for mutations, never ordinary reads.
-            self.mutated_attributes.update(
-                possible
-                for possible in self._mutation_origins(node)
-                if possible == "os.path" or possible.startswith(("os.path.", "pathlib."))
-            )
+            self._invalidate_mutation(node)
+
+    def _invalidate_mutation(self, node: ast.Attribute) -> None:
+        """Invalidate possible imported origins affected by an attribute write.
+
+        :param ast.Attribute node: Assigned or deleted attribute target.
+        """
+        # Retain earlier origins conservatively for mutations, never ordinary reads.
+        for possible in self._mutation_origins(node):
+            if possible in {"os.__class__", "os.path.__class__", "pathlib.__class__"}:
+                # Module subclasses can override every attribute with descriptors.
+                self.mutated_attributes.add(possible.removesuffix(".__class__"))
+            elif possible == "os.path" or possible.startswith(("os.path.", "pathlib.")):
+                self.mutated_attributes.add(possible)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Visit definition expressions and defer the body for lexical analysis."""
@@ -643,11 +650,7 @@ class OSPathDetector(ast.NodeVisitor):
         if isinstance(node.target, ast.Name):
             self.visit(node.target)
         elif isinstance(node.target, ast.Attribute):
-            self.mutated_attributes.update(
-                possible
-                for possible in self._mutation_origins(node.target)
-                if possible == "os.path" or possible.startswith(("os.path.", "pathlib."))
-            )
+            self._invalidate_mutation(node.target)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         """Visit the exception type and suite, then clear the deleted exception alias."""
