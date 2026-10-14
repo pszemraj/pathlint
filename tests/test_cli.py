@@ -119,6 +119,28 @@ def test_files_lists_only_deduplicated_selection(
     assert capsys.readouterr() == ("a.py\nsrc/b.py\n", "")
 
 
+@pytest.mark.parametrize(
+    "args, expected_status",
+    [
+        (["check", "one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
+        (["fix", "one.py", "--dry-run", "two.py", "--quiet"], 1),
+        (["files", "one.py", "--exclude", "vendor", "two.py"], 0),
+        (["one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
+        (["one.py", "--dry-run", "two.py", "--quiet"], 1),
+    ],
+)
+def test_paths_can_follow_interspersed_options(
+    workspace: Path, args: list[str], expected_status: int
+) -> None:
+    paths = [write_file(workspace, name) for name in ("one.py", "two.py")]
+    originals = [path.read_bytes() for path in paths]
+    result = invoke(workspace, *args)
+    assert result.returncode == expected_status
+    assert result.stderr == ""
+    assert all(path.name in result.stdout for path in paths)
+    assert [path.read_bytes() for path in paths] == originals
+
+
 @pytest.mark.parametrize("command", ["check", "files", "fix"])
 def test_missing_input_does_not_hide_valid_inputs(
     workspace: Path, capsys: pytest.CaptureFixture[str], command: str
@@ -316,12 +338,14 @@ def test_fix_parse_error_retains_original(
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("prefix", [[], ["prefix.py"], ["check", "prefix.py", "-q"]])
 def test_legacy_flags_after_sentinel_are_filenames(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
+    workspace: Path, capsys: pytest.CaptureFixture[str], prefix: list[str]
 ) -> None:
+    write_file(workspace, "prefix.py", "print('clean')\n")
     write_file(workspace, "--fix", "not Python")
     write_file(workspace, "--dry-run.py")
-    assert cli.main(["--", "--fix", "--dry-run.py"]) == 1
+    assert cli.main([*prefix, "--", "--fix", "--dry-run.py"]) == 1
     assert "--dry-run.py:2: PL001" in capsys.readouterr().out
 
 

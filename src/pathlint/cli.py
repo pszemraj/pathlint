@@ -62,6 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         installed_version = "unknown (not installed)"
     parser.add_argument("--version", action="version", version=f"%(prog)s {installed_version}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    command_parsers = {}
     for command, help_text in (
         ("check", "Detect os.path usage"),
         ("fix", "Apply experimental pathlib migrations"),
@@ -73,6 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             description=help_text,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
+        command_parsers[command] = subparser
         subparser.add_argument(
             "paths",
             nargs="*",
@@ -123,7 +125,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 help="Print diffs without writing files; exit 1 if changes are proposed",
             )
             subparser.add_argument("--no-color", action="store_true", help="Disable colored diffs")
-    args = parser.parse_args(_legacy_args(list(sys.argv[1:] if argv is None else argv)))
+    arguments = _legacy_args(list(sys.argv[1:] if argv is None else argv))
+    if arguments[0] in command_parsers:
+        args = command_parsers[arguments[0]].parse_intermixed_args(arguments[1:])
+        args.command = arguments[0]
+    else:
+        args = parser.parse_args(arguments)
     if not getattr(args, "paths", None):
         args.paths = [Path(".")]
     if args.command == "check" and args.output_format == "json" and (args.quiet or args.aggressive):
