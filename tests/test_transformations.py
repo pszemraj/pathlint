@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from textwrap import indent
+from types import ModuleType
 
 import pytest
 
@@ -674,6 +675,51 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
     updated, count = fix_content(source)
     assert count > 0
     assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize("migrate_call", [False, True])
+@pytest.mark.parametrize(
+    ("header", "expected_doc", "keeps_statement"),
+    [
+        ("from os.path import basename\n'ordinary string'\n", None, True),
+        (
+            "from os.path import basename\nfrom os.path import dirname\n'ordinary string'\n",
+            None,
+            True,
+        ),
+        ("from os.path import basename; 'ordinary string'\n", None, True),
+        (
+            "'module documentation'\nfrom os.path import basename\n'ordinary string'\n",
+            "module documentation",
+            False,
+        ),
+        (
+            "'module documentation'; from os.path import basename; 'ordinary string'\n",
+            "module documentation",
+            True,
+        ),
+        ("marker = True\nfrom os.path import basename\n'ordinary string'\n", None, False),
+    ],
+)
+def test_import_cleanup_preserves_module_docstring(
+    header: str, expected_doc: str | None, keeps_statement: bool, migrate_call: bool
+) -> None:
+    source = header + ("filename = basename('directory/file')\n" if migrate_call else "")
+    source += "result = __doc__\n"
+    updated, count = fix_content(source)
+    assert "from os.path import basename" not in updated
+    assert ("pass" in updated) is keeps_statement
+    if migrate_call:
+        assert count > 0
+        assert "filename = Path(" in updated
+    for content in (source, updated):
+        module = ModuleType("fixture")
+        exec(compile(content, "<fixture>", "exec"), module.__dict__)
+        assert module.__doc__ == expected_doc
+        assert module.result == expected_doc
+        if migrate_call:
+            assert module.filename == "file"
+    assert fix_content(updated) == (updated, 0)
 
 
 @pytest.mark.parametrize(

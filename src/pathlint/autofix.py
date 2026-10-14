@@ -580,6 +580,10 @@ def _clean_imports(content: str) -> tuple[str, int]:
         and node.attr == "path"
         for node in ast.walk(tree)
     )
+    first_non_import = next(
+        (node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))),
+        None,
+    )
     count = 0
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -613,6 +617,13 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 remaining.append(alias)
         if remaining == node.names:
             continue
+        preserve_statement = (
+            not remaining
+            and node is tree.body[0]
+            and isinstance(first_non_import, ast.Expr)
+            and isinstance(first_non_import.value, ast.Constant)
+            and isinstance(first_non_import.value.value, str)
+        )
         start, end = source.span(node)
         # Keep comments inside multiline import statements in their original positions.
         if "#" in content[start:end]:
@@ -647,8 +658,8 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 else:
                     # An empty suite still needs a statement.
                     replacement = "pass"
-            # Removing the last statement of an indented suite requires pass.
-            if node.col_offset and replacement == "":
+            # Keep suites valid and ordinary strings from becoming module docstrings.
+            if (node.col_offset or preserve_statement) and replacement == "":
                 replacement = "pass"
                 start, end = source.span(node)
         source.replace(start, end, replacement)
