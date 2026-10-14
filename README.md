@@ -3,252 +3,313 @@
 [![PyPI version](https://badge.fury.io/py/pathlint.svg)](https://pypi.org/project/pathlint/)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 
-> Fast linter to detect os.path usage and encourage pathlib adoption
+Find `os.path` usage and migrate supported calls to `pathlib`. Pathlint has a
+standard-library-only runtime and supports Python 3.9 and newer.
 
-## Why pathlint?
-
-Still using `os.path` in 2025+? `pathlint` is a fast, comprehensive linter that detects **all** `os.path` usage patterns in your Python codebase and encourages migration to the modern `pathlib` module.
-
-### Key Features
-
-- **Comprehensive Detection**: Catches import statements, aliased imports, function calls, and even type annotations
-- **Performance Optimized**: 3x faster than traditional AST-based linters with early termination
-- **Smart Exclusions**: Automatically skips `venv`, `__pycache__`, `node_modules`, and other common directories
-- **Professional Output**: Clean, informative output with optional statistics
-- **Auto-fix Support**: Experimental auto-fixer to migrate code automatically
+- Detect imports, aliases, function references, calls, and usage in annotations.
+- Exclude files and directories with repeatable name or path patterns.
+- Honor Git ignore rules automatically when Git is available.
+- Get concise text diagnostics, quiet output, or JSON reports.
+- Preview experimental fixes as unified diffs before applying them.
 
 ## Installation
 
 ```bash
 pip install pathlint
+
+# Verify installation
+pathlint --version
+
+# Check Python files in the current directory
+pathlint check .
 ```
 
-## Pre-commit Hook Integration
+Git is optional. Without Git, directory scans use built-in and explicit
+exclusions; `.gitignore` rules are not interpreted.
 
-pathlint integrates with [pre-commit](https://pre-commit.com/) to catch os.path usage before commits.
+## Usage
 
-### Setup
+```bash
+# Check the current directory (also the behavior of bare pathlint)
+pathlint check
 
-Add to your `.pre-commit-config.yaml`:
+# Check one or more files or directories
+pathlint check myfile.py
+pathlint check src/ tests/ scripts/
+
+# See exactly which files will be selected, without parsing them
+pathlint files .
+
+# Preview fixes, then apply them
+pathlint fix src/ --dry-run
+pathlint fix src/
+
+# Module invocation works too
+python -m pathlint check .
+```
+
+Use `pathlint --help` or `pathlint check --help` for command help.
+
+### Excluding files and directories
+
+All three commands use the same selection rules:
+
+```bash
+pathlint check . \
+  --exclude vendor \
+  --exclude 'training/wandb/*' \
+  --exclude backups
+
+pathlint files . -e '*.generated.py' -e 'src/legacy/'
+pathlint fix . --exclude vendor --dry-run
+
+# Disable Git ignores or built-in exclusions independently
+pathlint check . --no-gitignore
+pathlint check . --no-default-excludes
+```
+
+Each `-e` / `--exclude` accepts one pattern; repeat the argument for multiple
+patterns. Explicit exclusions add to the built-in exclusions.
+
+- Names without `/`, such as `backups` or `test_*.py`, match at any depth.
+- Patterns containing `/` match paths relative to the working directory.
+  `./vendor` matches the top-level `vendor`, while `vendor` matches that name
+  anywhere. Absolute patterns can exclude paths outside the working directory.
+- Directory matches exclude their descendants. A trailing `/` restricts a
+  pattern to directories.
+- Patterns use case-sensitive `fnmatch` syntax: `*`, `?`, and bracket expressions.
+  `*` can span `/`; `**` has no additional meaning. Quote wildcards to prevent
+  shell expansion. These patterns do not support Git-style `!` negation.
+
+Built-in exclusions are `__pycache__`, `.venv`, `venv`, `.git`, `node_modules`,
+`.tox`, `build`, and `dist`.
+
+In Git worktrees, directory scans include tracked files and untracked files
+that Git does not ignore. Git handles nested `.gitignore` rules, negation,
+repository-local excludes, and global ignores. Tracked files remain eligible
+even when they match an ignore rule. Nonexcluded nested repositories use their
+own Git rules.
+
+Explicitly named files bypass Git and built-in exclusions. **Explicit
+`--exclude` patterns still apply**, including to filenames supplied by
+pre-commit. File symlinks select their resolved Python targets once; exclusions
+match both the link and target paths.
+
+### Output
+
+```text
+src/utils.py:12: PL001 os.path usage: os.path.exists(value)
+Found 1 violation in 1 of 42 files checked.
+```
+
+Paths are relative to the working directory when possible, and absolute for
+external files. Text output retains the stream's encoding and escapes characters
+it cannot represent, including when redirected through legacy Windows encodings.
+Each offending source line is reported once, even if it contains several usages.
+`PL001` means “Use pathlib instead of os.path.”
+
+```bash
+# Findings only; no summary
+pathlint check . --quiet
+
+# Show the five files with the most violations
+pathlint check . --stats
+
+# Machine-readable report
+pathlint check . --output-format json
+
+# Include offender statistics in the JSON report
+pathlint check . --output-format json --stats
+
+# Optional aggressive message
+pathlint check . --aggressive
+```
+
+JSON reports contain `diagnostics`, `errors`, and `summary`. Each diagnostic has
+`path`, `line`, `code`, `message`, and `source`. Summary fields are
+`files_checked`, `files_with_issues`, `violations`, and `errors`; files that fail
+reading or parsing are not counted as checked. `--stats` adds a `statistics`
+list containing up to five `{path, violations}` entries.
+
+JSON is available only for `check` and cannot be combined with `--quiet` or
+`--aggressive`. Runtime errors are included in the JSON report without mixing
+text into stdout. Text-mode errors go to stderr.
+
+### Exit codes and compatibility
+
+| Command | `0` | `1` | `2` |
+| --- | --- | --- | --- |
+| `check` | Clean or no files selected | Violations found | Input, discovery, read, or parse error |
+| `fix` | Completed | — | Input, discovery, read, parse, or write error |
+| `fix --dry-run` | No edits proposed | Edits proposed | Error |
+| `files` | Listing completed, including empty selection | — | Input or discovery error |
+
+Errors take precedence over violations or proposed edits. Other valid files
+are still processed. Ctrl-C exits with status `130`.
+
+Existing invocations continue to work without warnings:
+
+```bash
+pathlint .
+pathlint --fix src/
+pathlint --dry-run src/
+```
+
+The original `python -m pathlint.linter` and
+`python -m pathlint.autofix` entry points also remain available. A valid empty
+selection now succeeds; dry runs now return `1` when they propose edits.
+
+## What it detects
+
+```python
+import os
+import os as system
+import os.path as osp
+from os import path as paths
+from os.path import exists as present
+
+os.path.exists("file")
+system.path.join("directory", "file")
+osp.isdir("directory")
+paths.dirname(__file__)
+present("file")
+callback = os.path.join
+```
+
+Pathlint resolves imported names in function, class, and comprehension scopes
+so ordinary local shadowing is not mistaken for `os.path`. Private aliases in class
+scopes are left unresolved because Python mangles their names. Deleted class
+locals and cleared exception aliases fall back to module globals. Function and
+generator bodies use the enclosing scope's final bindings for detection; a
+generator's first iterable is inspected immediately. Dynamic rebinding can prevent
+resolution. Wildcard imports invalidate tracked bindings; later explicit imports
+can restore them. Detection inspects `if` branches independently and uses literal
+conditions when merging bindings in the current scope. Loop bindings are merged
+conservatively across iterations and `else` suites. Fixes in deferred bodies
+require enclosing imports to exist when the function, lambda, or generator is
+created, and conservatively skip aliases rebound anywhere in the file, including
+imports with conflicting origins. Stable imports inside the body can still be
+migrated. This is a static check, not full Python execution analysis.
+
+Expressions in annotations are checked too. Valid `os.PathLike` annotations
+are not `os.path` usage and are not flagged. The fixer leaves annotation
+expressions unchanged: postponed annotations and Python 3.14's lazy annotations
+can resolve names after their bindings change.
+
+## Auto-fix (experimental)
+
+```bash
+# Review a unified diff without changing files
+pathlint fix src/ --dry-run
+
+# Apply supported migrations
+pathlint fix src/
+
+# Print only the diff
+pathlint fix src/ --dry-run --quiet
+
+# Disable terminal diff colors
+pathlint fix src/ --dry-run --no-color
+```
+
+Fixes use AST locations to change expressions while preserving surrounding
+source text, including comments and strings. Imported aliases, named function
+imports, calls inside nested expressions, and expressions inside f-strings are
+supported. Pathlib imports follow module docstrings and future imports. Existing
+Pathlib aliases are reused where possible; new constructor imports use a private
+alias to preserve wildcard exports.
+
+Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`
+with string-literal arguments. Calls with nonliteral arguments, including variables
+and nested calls, remain unchanged; eligible literal calls inside them can still
+be fixed. Values and types are not inferred.
+Unsupported references retain their imports.
+Keyword arguments, starred arguments, call targets containing comments, literal
+file descriptors, byte paths, and known inexact literal forms are left unchanged.
+Known inexact forms include empty paths, trailing separators, named-user
+expansion, and rooted literals passed to `isabs` whose interpretation can differ
+under Windows path rules.
+All tilde-prefixed `expanduser` arguments remain unchanged because home values
+can contain spellings that Pathlib normalizes or fail to resolve.
+On Windows, string-returning fixes also skip literals whose separators or dot
+components Pathlib would normalize.
+Calls with uncertain branch, exception, context manager, match, or loop bindings
+and methods whose `os.path` attributes or callable internals are assigned or
+deleted are also left unchanged. Calls outside annotation expressions remain
+eligible for fixes.
+Mutation checks retain possible copies of imported modules and callables through
+assignments, loop targets, and default parameters. They inspect all expression
+children, conservatively including container selections and comprehensions. Calls
+retain possible origins from their arguments; return types are not inferred.
+Copies stored in object attributes, class fields, or container entries conservatively prevent
+fixes for the copied module or callable. The same applies when these objects are
+passed to calls, returned, yielded, or used by context managers or match patterns.
+These copies do not establish bindings for detection or migration of copied calls.
+Mutation origins are conservative across scopes and statement order; copies of
+callable internals can also exclude fixes for their exported parent.
+Assigning an imported module's `__class__` invalidates all of its lookups because
+module subclasses can override attributes with descriptors.
+Explicit `global` writes prevent affected aliases, constructors, and `str`
+conversions from being used by fixes, including in module-level code.
+Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
+builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
+`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, their bound
+`__setattr__`/`__delattr__` equivalents, exposed `builtins`,
+function/frame namespaces, and module registries (`sys.modules` or
+`importlib.import_module`); these capabilities can overwrite aliases or generated
+constructors. Exposed function defaults, keyword defaults, and annotation dictionaries
+also prevent fixes. Bare `dir()` use retains imports while supported calls remain eligible.
+Fixes retain module-level imports for re-exports, including conditional imports
+and bindings declared `global`. Imports referenced by annotations or `__all__`
+also remain. Retained imports can still appear in check results. Unused local
+imports can still be removed. Fixes avoid
+constructors affected by Pathlib mutations. Sources containing wildcard imports
+are left unchanged because
+their exports can overwrite names used by a fix. Sources using type parameters
+or type aliases are also left unchanged because their annotation scopes and lazy
+values are not analyzed by the fixer. `abspath`, `splitext`, `sep`, and `pathsep`
+are not rewritten because their former replacements changed behavior
+or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
+unchanged: on supported Python versions, their Pathlib replacements can raise
+filesystem errors where `os.path` returns `False`.
+
+**Review every diff and test the result.** Pathlib normalizes path strings.
+The fixer does not promise to remove every violation. Diff colors are enabled
+only on interactive terminals.
+
+## Pre-commit hook integration
+
+Add to `.pre-commit-config.yaml`:
 
 ```yaml
 repos:
   - repo: https://github.com/pszemraj/pathlint
-    rev: v0.1.0  # Use latest release
+    rev: v0.3.0  # Use the release you want to pin
     hooks:
       - id: pathlint
+        args: [--exclude, vendor, --exclude, backups]
 ```
 
-Install the hook:
+Install and verify the hook:
 
 ```bash
 pre-commit install
-```
-
-### Usage
-
-Runs automatically on `git commit`. Manual check:
-
-```bash
 pre-commit run pathlint --all-files
 ```
 
-### Auto-fix Mode (Experimental)
-
-```yaml
-- id: pathlint-fix  # Use auto-fix hook instead
-```
-
-⚠️ Always review auto-fixed changes!
-
-## Usage
-
-### Basic Linting
-
-```bash
-# Lint files or directories
-pathlint myfile.py
-pathlint src/
-pathlint .
-
-# Multiple paths
-pathlint src/ tests/ scripts/
-```
-
-### Advanced Options
-
-```bash
-# Show statistics about worst offenders
-pathlint . --stats
-
-# Aggressive mode (for fun)
-pathlint . --aggressive
-
-# Auto-fix mode (experimental)
-pathlint --dry-run src/  # Preview changes
-pathlint --fix src/      # Apply fixes
-```
-
-## What It Detects
-
-pathlint catches ALL these patterns:
-
-```python
-# Import patterns
-import os.path
-import os.path as ospath
-from os import path
-from os import path as p
-from os.path import join, exists
-
-# Direct usage
-os.path.exists('file.txt')
-os.path.join('dir', 'file')
-path.dirname(__file__)  # After 'from os import path'
-
-# Type annotations (missed by most linters!)
-def process(f: os.path.PathLike):
-    pass
-
-def get_path() -> os.path.PathLike:
-    return 'test'
-```
-
-## Output Format
-
-### Clean Files
-
-```
-✓ 42 files checked - no os.path usage found!
-```
-
-### Files with Issues
-
-```
-/path/to/file.py
-  L   1: import os.path
-  L  23: x = os.path.join('a', 'b')
-  L  45: def process(f: os.path.PathLike):
-
-────────────────────────────────────────
-Files checked:     42
-Files with issues: 3
-Total violations:  7
-
-✗ Found os.path usage. Migrate to pathlib.
-```
-
-### With Statistics (`--stats`)
-
-```
-Worst offenders:
-   12 - legacy_utils.py
-    5 - old_config.py
-    2 - setup.py
-```
-
-## Exit Codes
-
-- `0` - No os.path usage found
-- `1` - os.path usage detected
-- `2` - Error (no files found, invalid paths, etc.)
-
-## Performance
-
-Optimized for speed with:
-
-- Early termination for files without 'os' or 'path' strings
-- Smart directory traversal with automatic exclusions
-- Single-pass AST visitor
-- Automatic deduplication of findings
-
-Benchmarks on real codebases:
-
-```
-100 files: 0.31s (vs 0.84s traditional)
-500 files: 1.1s (vs 4.2s traditional)
-```
-
-## Auto-fix (Experimental)
-
-Pathlint can automatically migrate common os.path patterns:
-
-```bash
-# Preview changes without modifying files
-pathlint --dry-run myfile.py
-
-# Apply fixes (modifies files!)
-pathlint --fix myfile.py
-
-# Fix entire directory
-pathlint --fix src/
-```
-
-Supports migration of:
-
-- Import statements
-- Common function calls (`exists`, `join`, `dirname`, etc.)
-- Path attributes
-- Automatic `pathlib` import addition
-
-**⚠️ Warning**: Always review auto-fixed code and test thoroughly!
+The `pathlint` hook runs `pathlint check`. To apply experimental fixes instead,
+use the `pathlint-fix` hook, which runs `pathlint fix`. Review its changes before
+committing.
 
 ## Development
 
 ```bash
-# Install with dev dependencies
-pip install -e .[dev]
-
-# Run tests
+pip install -e '.[dev]'
 pytest
-
-# Format code
-ruff format .
-
-# Check linting
-ruff check --fix .
+ruff check .
+ruff format --check .
 ```
-
-## Why Pathlib?
-
-`pathlib` provides:
-
-- Object-oriented interface
-- Operator overloading (`/` for joining paths)
-- Cross-platform compatibility
-- Rich path manipulation methods
-- Type safety with `Path` objects
-
-```python
-# Old way (os.path)
-import os.path
-filepath = os.path.join(os.path.dirname(__file__), 'data', 'config.json')
-if os.path.exists(filepath):
-    abs_path = os.path.abspath(filepath)
-
-# Modern way (pathlib)
-from pathlib import Path
-filepath = Path(__file__).parent / 'data' / 'config.json'
-if filepath.exists():
-    abs_path = filepath.resolve()
-```
-
-**Note**: While pathlib is recommended for most use cases, there are rare scenarios where `os.path` might offer better performance[^1].
-
-[^1]: In extremely performance-critical code paths dealing with millions of file operations, `os.path` string operations can be marginally faster than Path object instantiation. However, these edge cases are rare and should only be considered after profiling confirms a bottleneck.
 
 ## License
 
-MIT License - see LICENSE.txt
-
-## Contributing
-
-Contributions welcome! Please ensure:
-
-1. Tests pass: `pytest`
-2. Code is formatted: `ruff format .`
-3. No linting errors: `ruff check .`
-
----
-
-**Remember**: Friends don't let friends use `os.path` in 2025+!
+MIT License — see [LICENSE.txt](LICENSE.txt).
