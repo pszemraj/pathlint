@@ -173,6 +173,12 @@ def test_no_git_binary_falls_back_to_walk(repo: Path, monkeypatch: pytest.Monkey
     assert discover_files([repo]) == ([wanted], [])
 
 
+def test_empty_git_directory_falls_back_to_walk(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    wanted = write(tmp_path, "src/keep.py")
+    assert discover_files([tmp_path / "src"]) == ([wanted], [])
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Named pipes require Unix")
 @pytest.mark.parametrize("respect_gitignore", [False, True])
 def test_directory_scans_skip_named_pipes(repo: Path, respect_gitignore: bool) -> None:
@@ -324,6 +330,37 @@ def test_git_listing_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("pathlint.discovery.subprocess.run", fail_listing)
     assert discover_files([repo]) == ([], [(repo, "fatal: cannot read index")])
+
+
+@pytest.mark.parametrize("git_file", [False, True])
+@pytest.mark.parametrize("subdirectory", [False, True])
+@pytest.mark.parametrize("failure_file", ["config", "HEAD"])
+def test_git_discovery_errors_do_not_fall_back_to_walk(
+    repo: Path, git_file: bool, subdirectory: bool, failure_file: str
+) -> None:
+    root = (repo if failure_file == "config" else repo.parent) / "nested"
+    root.mkdir()
+    git_dir = repo.parent / "nested.git" if git_file else root / ".git"
+    args = ("--separate-git-dir", str(git_dir)) if git_file else ()
+    git(root, "init", "-q", *args)
+    ignored = write(root, "src/ignored.py")
+    (root / ".gitignore").write_text("src/ignored.py\n", encoding="utf-8")
+    wanted = write(repo.parent, "outside/keep.py")
+    scan_root = root / "src" if subdirectory else root
+    assert discover_files([scan_root]) == ([], [])
+    if failure_file == "config":
+        (git_dir / "config").write_text("invalid config\n", encoding="utf-8")
+    else:
+        (git_dir / "HEAD").unlink()
+    failure = subprocess.run(
+        ["git", "-C", str(scan_root), "rev-parse", "--show-toplevel"], capture_output=True
+    )
+    assert failure.returncode != 0
+    assert discover_files([scan_root, wanted.parent]) == (
+        [wanted],
+        [(scan_root, failure.stderr.decode(errors="replace").strip())],
+    )
+    assert ignored.read_text(encoding="utf-8") == "pass\n"
 
 
 def test_git_execution_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

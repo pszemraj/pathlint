@@ -206,6 +206,14 @@ def discover_files(
                             else:
                                 add_file(candidate, candidate_alias)
                     return
+                if any(
+                    (parent / ".git").is_file()
+                    or (parent / ".git/HEAD").exists()
+                    or (parent / ".git/objects").is_dir()
+                    for parent in (root, *root.parents)
+                ):
+                    errors.append((root, worktree.stderr.decode(errors="replace").strip()))
+                    return
             except OSError as error:
                 errors.append((root, str(error)))
                 return
