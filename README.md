@@ -180,11 +180,12 @@ Pathlint resolves imported names in function, class, and comprehension scopes
 so ordinary local shadowing is not mistaken for `os.path`. Private aliases in class
 scopes are left unresolved because Python mangles their names. Function bodies
 use the enclosing scope's final bindings for detection; dynamic rebinding can
-prevent resolution. Fixes in deferred bodies require enclosing imports to exist
-when the function, lambda, or generator is created, and conservatively skip
-aliases rebound anywhere in the file, including imports with conflicting
-origins. Stable imports inside the body can still be migrated. This is a static
-check, not full Python execution analysis.
+prevent resolution. Detection inspects `if` branches independently and uses literal
+conditions when merging bindings in the current scope. Fixes in deferred bodies
+require enclosing imports to exist when the function, lambda, or generator is
+created, and conservatively skip aliases rebound anywhere in the file, including
+imports with conflicting origins. Stable imports inside the body can still be
+migrated. This is a static check, not full Python execution analysis.
 
 Expressions in annotations are checked too. Valid `os.PathLike` annotations
 are not `os.path` usage and are not flagged. The fixer leaves annotation
@@ -222,11 +223,14 @@ literals passed to `isabs` whose interpretation can differ under Windows path ru
 Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes are assigned or deleted are also left
 unchanged. Calls outside annotation expressions remain eligible for fixes.
-Fixes retain imports when annotations, `__all__`, or namespace inspection may
-reference them, and avoid constructors affected by Pathlib mutations. Sources
-containing wildcard imports are left unchanged because their exports can overwrite
-names used by a fix. Sources using type parameters or type aliases are also left
-unchanged because their annotation scopes and lazy values are not analyzed by the
+Explicit `global` writes prevent affected aliases, constructors, and `str`
+conversions from being used by fixes, including in module-level code.
+Fixes retain imports when annotations, `__all__`, namespace inspection, or dynamic
+code (`dir`, `eval`, `exec`) may reference them, and avoid constructors affected by
+Pathlib mutations. Sources containing wildcard imports are left unchanged because
+their exports can overwrite names used by a fix. Sources using type parameters
+or type aliases are also left unchanged because their annotation scopes and lazy
+values are not analyzed by the
 fixer. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
 or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
