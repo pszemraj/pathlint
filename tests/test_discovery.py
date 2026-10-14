@@ -337,21 +337,27 @@ def test_explicit_file_symlink_preserves_alias_exclusions(
 
 
 @pytest.mark.parametrize("respect_gitignore", [False, True])
-def test_directory_file_symlinks_are_normalized(repo: Path, respect_gitignore: bool) -> None:
-    target = write(repo, "real/target.py")
+@pytest.mark.parametrize(
+    ("target_name", "alias_name"),
+    [("target.py", "alias.py"), ("target.py", "alias.txt"), ("target.txt", "alias.py")],
+)
+def test_directory_file_symlinks_are_normalized(
+    repo: Path, respect_gitignore: bool, target_name: str, alias_name: str
+) -> None:
+    target = write(repo, f"real/{target_name}")
     links = repo / "links"
     links.mkdir()
-    alias = links / "alias.py"
+    alias = links / alias_name
     alias.symlink_to(target)
     assert discover_files([repo, target, links], respect_gitignore=respect_gitignore) == (
-        [target],
+        [target] if target.suffix == ".py" else [],
         [],
     )
     assert discover_files(
-        [repo], exclude_patterns=("target.py",), respect_gitignore=respect_gitignore
+        [repo], exclude_patterns=(target_name,), respect_gitignore=respect_gitignore
     ) == ([], [])
     assert discover_files(
-        [links], exclude_patterns=("links/*.py",), respect_gitignore=respect_gitignore
+        [links], exclude_patterns=("links/*",), respect_gitignore=respect_gitignore
     ) == ([], [])
 
     # Automatic exclusions apply to a symlink's destination too; named files bypass them.

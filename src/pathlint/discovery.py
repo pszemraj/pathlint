@@ -102,7 +102,7 @@ def discover_files(
         :param Path candidate: File path found by Git or a filesystem walk.
         :param Path alias: File spelling under the original input directory.
         """
-        if candidate.suffix != ".py" or not candidate.is_file() or excluded(candidate, alias):
+        if not candidate.is_file() or excluded(candidate, alias):
             return
         try:
             resolved = candidate.resolve()
