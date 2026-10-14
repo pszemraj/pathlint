@@ -688,6 +688,12 @@ def fix_content(content: str) -> tuple[str, int]:
     ):
         # Unknown exports can overwrite both imported and generated constructor aliases.
         return content, 0
+    if any(
+        getattr(node, "type_params", ()) or isinstance(node, getattr(ast, "TypeAlias", ()))
+        for node in ast.walk(tree)
+    ):
+        # Type parameters and lazy aliases use annotation scopes we do not analyze.
+        return content, 0
     detector = OSPathDetector(list(StringIO(content, newline="")))
     detector.visit(tree)
     fixer = _PathFixer(content, tree)

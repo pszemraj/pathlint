@@ -218,6 +218,44 @@ def test_wildcard_imports_leave_source_unchanged(
         assert result.stderr == ""
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Type parameter syntax requires Python 3.12")
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "class C[Path]:\n    value = os.path.basename('a/b')\nresult = C.value\n",
+            "b",
+        ),
+        (
+            "def f[Path]():\n    return os.path.basename('a/b')\nresult = f()\n",
+            "b",
+        ),
+        ("type Alias[Path] = os.path.basename('a/b')\nresult = Alias.__value__\n", "b"),
+        (
+            "type Alias = os.path.join('a', 'b')\n"
+            "str = lambda value: 'custom'\nresult = Alias.__value__\n",
+            str(Path("a") / "b"),
+        ),
+        (
+            "type Alias = os.path.basename('a/b')\n"
+            "os = __import__('types').SimpleNamespace(\n"
+            "    path=__import__('types').SimpleNamespace(basename=lambda value: 'custom'))\n"
+            "result = Alias.__value__\n",
+            "custom",
+        ),
+    ],
+)
+def test_type_parameter_scopes_and_lazy_aliases_are_not_rewritten(body: str, expected: str) -> None:
+    """Preserve constructs whose annotation scopes need separate binding analysis."""
+    original = "import os\nfrom pathlib import Path\n" + body
+    updated, count = fix_content(original)
+    assert (updated, count) == (original, 0)
+    assert run(updated) == run(original) == expected
+    detector = OSPathDetector(original.splitlines())
+    detector.visit(ast.parse(original))
+    assert detector.offenses
+
+
 @pytest.mark.parametrize(
     "expression",
     [
