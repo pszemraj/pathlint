@@ -292,6 +292,10 @@ def discover_files(
                     errors.append((path, str(error)))
                 continue
             if not path.exists():
+                if alias.is_symlink() and (
+                    is_excluded(path, exclude_patterns) or is_excluded(alias, exclude_patterns)
+                ):
+                    continue
                 errors.append((path, "Path does not exist"))
             elif path.is_file():
                 if (

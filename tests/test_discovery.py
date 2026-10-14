@@ -816,18 +816,29 @@ def test_cyclic_symlink_input_does_not_discard_valid_files(
 
 
 @pytest.mark.parametrize("pattern", ["alias.py", "./alias.py", "links/*.py"])
+@pytest.mark.parametrize("dangling", [False, True])
 def test_explicit_file_symlink_preserves_alias_exclusions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str, dangling: bool
 ) -> None:
     monkeypatch.chdir(tmp_path)
     target = write(tmp_path, "real/target.py")
+    if dangling:
+        target.unlink()
     alias = tmp_path / ("links/alias.py" if pattern.startswith("links/") else "alias.py")
     alias.parent.mkdir(exist_ok=True)
     alias.symlink_to(target)
-    assert discover_files([alias]) == ([target], [])
+    expected_files = [] if dangling else [target]
+    expected_errors = [(target, "Path does not exist")] if dangling else []
+    assert discover_files([alias]) == (expected_files, expected_errors)
     assert discover_files([alias], exclude_patterns=(pattern,)) == ([], [])
     assert discover_files([alias], exclude_patterns=("target.py",)) == ([], [])
-    assert discover_files([alias, target]) == ([target], [])
+    assert discover_files([alias, target]) == (expected_files, expected_errors * 2)
+    if dangling:
+        # Excluding an existing link does not suppress a separately named missing input.
+        assert discover_files([alias, target], exclude_patterns=("alias.py", "target.py")) == (
+            [],
+            expected_errors,
+        )
 
 
 @pytest.mark.parametrize("respect_gitignore", [False, True])
