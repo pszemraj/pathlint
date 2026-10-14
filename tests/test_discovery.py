@@ -159,6 +159,14 @@ def test_no_git_binary_falls_back_to_walk(repo: Path, monkeypatch: pytest.Monkey
     assert discover_files([repo]) == ([wanted], [])
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Named pipes require Unix")
+@pytest.mark.parametrize("respect_gitignore", [False, True])
+def test_directory_scans_skip_named_pipes(repo: Path, respect_gitignore: bool) -> None:
+    wanted = write(repo, "keep.py")
+    os.mkfifo(repo / "pipe.py")
+    assert discover_files([repo], respect_gitignore=respect_gitignore) == ([wanted], [])
+
+
 def test_git_ignores_negation_tracked_and_deleted_files(repo: Path) -> None:
     (repo / ".gitignore").write_text(
         "ignored/\n*.py\n!keep.py\n!nested/\n!nested/keep.py\n", encoding="utf-8"

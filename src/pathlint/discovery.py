@@ -124,7 +124,11 @@ def discover_files(
             ]
             for name in names:
                 candidate = current / name
-                if candidate.suffix == ".py" and not excluded(candidate, current_alias / name):
+                if (
+                    candidate.suffix == ".py"
+                    and candidate.is_file()
+                    and not excluded(candidate, current_alias / name)
+                ):
                     files.add(candidate)
 
     def scan(root: Path, alias: Path) -> None:
