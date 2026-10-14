@@ -155,6 +155,83 @@ def test_strings_comments_and_fstring_text_survive(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "expression",
+    [
+        '''f"{p.basename('a/b')=}"''',
+        '''f"{p.basename('a/b') = !r}"''',
+        '''f"{(p.basename('a/b'))=}"''',
+        '''f"{p.basename(p.join('a', 'b'))=}"''',
+        '''f"""{f"{p.basename('a/b')}"=}"""''',
+    ],
+)
+def test_debug_fstring_labels_preserve_original_expressions(expression: str) -> None:
+    """Keep debug field labels, including calls nested within their expressions."""
+    original = f"import os.path as p\nresult = {expression}\n"
+    updated, count = fix_content(original)
+    assert count == 0
+    assert updated == original
+    assert run(updated) == run(original)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="F-string comments require Python 3.12")
+def test_debug_fstring_comment_before_equals_is_preserved() -> None:
+    """Recognize a debug marker after a multiline grouping and comment."""
+    original = (
+        "import os.path as p\n" '''result = f"""{(p.basename('a/b') # keep comment\n)=}"""\n'''
+    )
+    updated, count = fix_content(original)
+    assert count == 0
+    assert updated == original
+    assert run(updated) == run(original)
+
+
+def test_debug_fstring_deferred_lambda_retains_its_label() -> None:
+    """Preserve nested deferred calls when their source contributes to a debug label."""
+    original = (
+        "import os.path as p\n"
+        """label = f"{(lambda: p.basename('a/b'))=}"\n"""
+        "result = label.split('=', 1)[0]\n"
+    )
+    updated, count = fix_content(original)
+    assert count == 0
+    assert updated == original
+    assert run(updated) == run(original) == "(lambda: p.basename('a/b'))"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        '''f"value={p.basename('a/b')}"''',
+        '''f"{p.basename('a/b')!r}"''',
+        '''f"{p.basename('a/b') == 'b'}"''',
+        '''f"{p.basename('a/b')=:{len(p.basename('c/d'))}}"''',
+    ],
+)
+def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression: str) -> None:
+    """Migrate ordinary fields and dynamic format specs while retaining debug labels."""
+    original = f"import os.path as p\nresult = {expression}\n"
+    updated, count = fix_content(original)
+    assert count > 0
+    assert "Path(" in updated
+    assert run(updated) == run(original)
+    assert fix_content(updated) == (updated, 0)
+
+
+def test_debug_fstring_walrus_still_updates_bindings() -> None:
+    """Analyze assignments inside preserved debug fields before later calls."""
+    original = (
+        "import os\nfrom types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(basename=str.upper))\n"
+        """label = f"{(os := custom)=}"\n"""
+        "result = os.path.basename('a/b')\n"
+    )
+    updated, count = fix_content(original)
+    assert count == 0
+    assert updated == original
+    assert run(updated) == run(original) == "A/B"
+
+
+@pytest.mark.parametrize(
     "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
 )
 @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])

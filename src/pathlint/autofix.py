@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import difflib
 import sys
+import tokenize
 from io import StringIO
 from pathlib import Path
 
@@ -96,6 +97,7 @@ class _PathFixer(OSPathDetector):
         self.source = _Source(content)
         self.count = 0
         self.needs_import = False
+        self.debug_calls: set[ast.Call] = set()
         # Deferred bodies may run before later imports, or between rebindings.
         # Same-spelling writes in unrelated scopes also exclude an alias: avoiding
         # uncertain migrations needs no execution-order or call-graph analysis.
@@ -335,6 +337,24 @@ class _PathFixer(OSPathDetector):
         alternatives.append(fallthrough)
         self.merge_bindings(alternatives)
 
+    def visit_FormattedValue(self, node: ast.FormattedValue) -> None:
+        """Analyze debug field expressions without changing their displayed source labels.
+
+        :param ast.FormattedValue node: F-string field with an expression and optional format spec.
+        """
+        _, end = self.source.span(node.value)
+        tokens = tokenize.generate_tokens(
+            StringIO(self.source.content[end:], newline=None).readline
+        )
+        following = next(
+            token.string for token in tokens if token.type == tokenize.OP and token.string != ")"
+        )
+        if following == "=":
+            self.debug_calls.update(
+                call for call in ast.walk(node.value) if isinstance(call, ast.Call)
+            )
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         """Rewrite supported imported os.path calls after processing nested calls.
 
@@ -342,6 +362,8 @@ class _PathFixer(OSPathDetector):
         """
         origin = self.resolve(node.func)
         self.generic_visit(node)
+        if node in self.debug_calls:
+            return
         if not origin or not origin.startswith("os.path."):
             return
         if any(changed.startswith("pathlib.") for changed in self.mutated_attributes):
