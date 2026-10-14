@@ -269,7 +269,8 @@ class OSPathDetector(ast.NodeVisitor):
             self.mutated_attributes.update(
                 possible
                 for possible in self._mutation_origins(node)
-                if possible == "os.path" or possible.startswith("os.path.")
+                if possible in {"os.path", "pathlib.Path"}
+                or possible.startswith(("os.path.", "pathlib.Path."))
             )
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:

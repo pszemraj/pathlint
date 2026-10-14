@@ -344,6 +344,25 @@ def test_replacing_path_module_invalidates_descendants() -> None:
         assert detector.resolve(ast.parse(expression, mode="eval").body) is None
 
 
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        ("module.Path = custom", "pathlib.Path"),
+        ("del module.Path", "pathlib.Path"),
+        ("constructor.exists = custom", "pathlib.Path.exists"),
+        ("del constructor.exists", "pathlib.Path.exists"),
+    ],
+)
+def test_pathlib_mutations_invalidate_constructor_origins(statement: str, expected: str) -> None:
+    source = "import pathlib as module\nfrom pathlib import Path as constructor\n" + statement
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {expected}
+    assert detector.resolve(ast.parse("constructor.exists", mode="eval").body) is None
+    if expected == "pathlib.Path":
+        assert detector.resolve(ast.parse("module.Path", mode="eval").body) is None
+
+
 def test_deferred_method_mutations_are_collected() -> None:
     source = """
         import os.path as osp
