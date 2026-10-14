@@ -102,8 +102,10 @@ Found 1 violation in 1 of 42 files checked.
 ```
 
 Paths are relative to the working directory when possible, and absolute for
-external files. Each offending source line is reported once, even if it
-contains several usages. `PL001` means “Use pathlib instead of os.path.”
+external files. Text output retains the stream's encoding and escapes characters
+it cannot represent, including when redirected through legacy Windows encodings.
+Each offending source line is reported once, even if it contains several usages.
+`PL001` means “Use pathlib instead of os.path.”
 
 ```bash
 # Findings only; no summary

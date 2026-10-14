@@ -318,7 +318,7 @@ x = os.path.exists('test')""")
 
         assert status == 1
         captured = capsys.readouterr()
-        assert "⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️" in captured.out
+        assert "WARNING: ARE YOU KIDDING ME? USE PATHLIB!" in captured.out
 
     def test_main_professional_output_format(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

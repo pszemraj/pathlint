@@ -226,7 +226,7 @@ def _check(
                     f"Found {len(diagnostics)} {noun} in {len(counts)} of {checked} files checked."
                 )
                 if aggressive:
-                    print("⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️")
+                    print("WARNING: ARE YOU KIDDING ME? USE PATHLIB!")
             elif errors:
                 print(f"Checked {checked} files; check incomplete.")
             elif not files:
@@ -307,10 +307,15 @@ def _fix(
 def main(argv: list[str] | None = None) -> int:
     """Run a command and return its exit status.
 
+    Keep stdout's encoding and escape characters it cannot represent.
+
     :param list[str] | None argv: Arguments without the executable name; None uses sys.argv[1:].
     :return int: The command's status, 130 on interruption, or 1 for a broken output pipe.
     """
     try:
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
         args = parse_args(argv)
         files, discovery_errors = discover_files(
             args.paths,

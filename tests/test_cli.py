@@ -46,8 +46,17 @@ def write_file(root: Path, name: str, content: str = OFFENDING) -> Path:
     return path
 
 
-def invoke(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def invoke(root: Path, *args: str, encoding: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the module in a subprocess, optionally forcing its output encoding.
+
+    :param Path root: Working directory for the command.
+    :param str args: Command-line arguments without the executable name.
+    :param str | None encoding: Stream encoding to force with UTF-8 mode disabled.
+    :return subprocess.CompletedProcess[str]: Captured output and process status.
+    """
     env = dict(os.environ, PYTHONPATH=str(Path(cli.__file__).parents[1]))
+    if encoding is not None:
+        env.update(PYTHONUTF8="0", PYTHONIOENCODING=f"{encoding}:strict")
     if "COV_CORE_SOURCE" in env:
         # These subprocesses change cwd; retain the parent's branch-coverage settings.
         env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
@@ -56,6 +65,7 @@ def invoke(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         cwd=root,
         env=env,
         text=True,
+        encoding=encoding,
         capture_output=True,
         check=False,
     )
@@ -463,3 +473,73 @@ def test_fix_crlf_preview_has_clean_lines_and_preserves_file_newlines(
     updated = path.read_bytes()
     assert b"\r\n" in updated
     assert b"\n" not in updated.replace(b"\r\n", b"")
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_cp1252_preserves_clean_and_aggressive_status(workspace: Path, clean: bool) -> None:
+    write_file(workspace, "sample.py", "print('clean')\n" if clean else OFFENDING)
+    result = invoke(workspace, "check", "sample.py", "--aggressive", encoding="cp1252")
+    assert result.returncode == (0 if clean else 1)
+    assert result.stderr == ""
+    assert result.stdout.isascii()
+    if clean:
+        assert result.stdout == "Checked 1 files; no os.path usage found.\n"
+    else:
+        assert "Found 1 violation in 1 of 1 files checked." in result.stdout
+        assert "WARNING: ARE YOU KIDDING ME? USE PATHLIB!" in result.stdout
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
+def test_output_encoding_preserves_unicode_data_and_command_status(
+    workspace: Path, encoding: str
+) -> None:
+    name = "café_🐍.py"
+    source = "import os\nvalue = os.path.exists('café/🐍')\n"
+    path = write_file(workspace, name, source)
+    original = path.read_bytes()
+    displayed_name = name.encode(encoding, errors="backslashreplace").decode(encoding)
+    displayed_source = (
+        source.splitlines()[1].encode(encoding, errors="backslashreplace").decode(encoding)
+    )
+
+    check = invoke(workspace, "check", name, "--stats", encoding=encoding)
+    assert check.returncode == 1
+    assert check.stderr == ""
+    assert f"{displayed_name}:2: PL001 os.path usage: {displayed_source}" in check.stdout
+    assert f"1 - {displayed_name}" in check.stdout
+
+    machine = invoke(workspace, "check", name, "--output-format=json", encoding=encoding)
+    assert machine.returncode == 1
+    assert machine.stderr == ""
+    report = json.loads(machine.stdout)
+    assert report["diagnostics"][0]["path"] == name
+    assert report["diagnostics"][0]["source"] == source.splitlines()[1]
+
+    listing = invoke(workspace, "files", name, encoding=encoding)
+    assert listing.returncode == 0
+    assert listing.stderr == ""
+    assert listing.stdout == displayed_name + "\n"
+
+    preview = invoke(workspace, "fix", name, "--dry-run", encoding=encoding)
+    assert preview.returncode == 1
+    assert preview.stderr == ""
+    assert f"--- {displayed_name}\n" in preview.stdout
+    assert f"-{displayed_source}\n" in preview.stdout
+    assert path.read_bytes() == original
+
+    fixing = invoke(workspace, "fix", name, encoding=encoding)
+    assert fixing.returncode == 0
+    assert fixing.stderr == ""
+    assert f"Fixed {displayed_name}:" in fixing.stdout
+    assert "café/🐍".encode() in path.read_bytes()
+    assert invoke(workspace, "check", name, encoding=encoding).returncode == 0
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
+def test_unicode_missing_input_keeps_error_status(workspace: Path, encoding: str) -> None:
+    name = "missing_🐍.py"
+    result = invoke(workspace, "check", name, encoding=encoding)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    displayed_name = name.encode(encoding, errors="backslashreplace").decode(encoding)
+    assert f"{displayed_name}: error: Path does not exist" in result.stderr
