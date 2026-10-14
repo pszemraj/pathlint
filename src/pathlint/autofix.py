@@ -478,10 +478,17 @@ def _clean_imports(content: str) -> tuple[str, int]:
     tree = ast.parse(content)
     source = _Source(content)
     if any(
-        isinstance(node, ast.Name) and node.id == "__all__" and isinstance(node.ctx, ast.Store)
+        (isinstance(node, ast.Name) and node.id == "__all__")
+        or (isinstance(node, ast.alias) and (node.asname or node.name) == "__all__")
         for node in ast.walk(tree)
     ):
-        # Explicit exports can refer to imports by string, including computed lists.
+        # Explicit exports can refer to imports by string, including imported lists.
+        return content, 0
+    if any(
+        getattr(node, "annotation", None) is not None or getattr(node, "returns", None) is not None
+        for node in ast.walk(tree)
+    ):
+        # Annotation aliases can resolve to strings that need imports after loading.
         return content, 0
     # A later del still needs its imported binding after calls are rewritten.
     referenced = {

@@ -306,14 +306,23 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
     assert run(updated) == run(source)
 
 
-@pytest.mark.parametrize("exports", ['["basename"]', 'list(("basename",))'])
-def test_import_cleanup_preserves_public_exports(tmp_path: Path, exports: str) -> None:
-    source = (
-        f"from os.path import basename\n__all__ = {exports}\nresult = basename('directory/file')\n"
-    )
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '__all__ = ["basename"]',
+        '__all__ = list(("basename",))',
+        "from export_names import __all__",
+        "from export_names import exported as __all__\n__all__.append('basename')",
+    ],
+)
+def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: str) -> None:
+    source = f"from os.path import basename\n{declaration}\nresult = basename('directory/file')\n"
     updated, count = fix_content(source)
     assert count > 0
     assert "from os.path import basename" in updated
+    (tmp_path / "export_names.py").write_text(
+        "__all__ = ['basename']\nexported = []\n", encoding="utf-8"
+    )
     for content in (source, updated):
         (tmp_path / "fixture.py").write_text(content, encoding="utf-8")
         result = subprocess.run(
@@ -331,6 +340,41 @@ def test_import_cleanup_preserves_public_exports(tmp_path: Path, exports: str) -
         assert result.returncode == 0, result.stderr
         assert result.stdout == "file\n"
         assert result.stderr == ""
+
+
+@pytest.mark.parametrize("rewrite_call", [False, True])
+@pytest.mark.parametrize(
+    ("definition", "lookup"),
+    [
+        ("def check(value: 'basename'): pass", "get_type_hints(check)['value'].__name__"),
+        ("def check() -> 'basename': pass", "get_type_hints(check)['return'].__name__"),
+        (
+            "class Check:\n    value: 'basename'",
+            "get_type_hints(Check, globalns=globals())['value'].__name__",
+        ),
+        (
+            "def check(value: list['basename']): pass",
+            "get_type_hints(check)['value'].__args__[0].__name__",
+        ),
+        (
+            "Alias = 'basename'\ndef check(value: Alias): pass",
+            "get_type_hints(check)['value'].__name__",
+        ),
+    ],
+)
+def test_import_cleanup_preserves_quoted_annotations(
+    definition: str, lookup: str, rewrite_call: bool
+) -> None:
+    source = (
+        "from os.path import basename\nfrom typing import get_type_hints\n"
+        + definition
+        + f"\nresult = {lookup}\n"
+        + ("filename = basename('directory/file')\n" if rewrite_call else "")
+    )
+    updated, count = fix_content(source)
+    assert count == int(rewrite_call)
+    assert "from os.path import basename" in updated
+    assert run(updated) == run(source) == "basename"
 
 
 def test_crlf_and_final_newline_are_preserved() -> None:
