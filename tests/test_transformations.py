@@ -2197,6 +2197,46 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "custom",
             False,
         ),
+        *[
+            (
+                f"{binding}{accessor}('basename', lambda value: 'custom')\n"
+                "result = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for binding, accessor in [
+                ("", "osp.__setattr__"),
+                ("mutate = osp.__setattr__\n", "mutate"),
+                ("from os.path import __setattr__ as mutate\n", "mutate"),
+            ]
+        ],
+        *[
+            (
+                f"{binding}{accessor}('basename')\n"
+                "try:\n    result = osp.basename('directory/file')\n"
+                "except AttributeError:\n    result = 'missing'\n",
+                "missing",
+                False,
+            )
+            for binding, accessor in [
+                ("", "osp.__delattr__"),
+                ("mutate = osp.__delattr__\n", "mutate"),
+                ("from os.path import __delattr__ as mutate\n", "mutate"),
+            ]
+        ],
+        *[
+            (
+                "def custom(value):\n    return 'custom'\n"
+                f"{binding}{accessor}('__code__', custom.__code__)\n"
+                "result = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for binding, accessor in [
+                ("", "osp.basename.__setattr__"),
+                ("mutate = osp.basename.__setattr__\n", "mutate"),
+            ]
+        ],
         (
             "osp.basename: object = lambda value: 'custom'\nresult = osp.basename('directory/file')\n",
             "custom",

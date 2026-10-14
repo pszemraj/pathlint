@@ -247,7 +247,8 @@ Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
 builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
-`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, exposed `builtins`,
+`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, their bound
+`__setattr__`/`__delattr__` equivalents, exposed `builtins`,
 function/frame namespaces, and module registries (`sys.modules` or
 `importlib.import_module`); these capabilities can overwrite aliases or generated
 constructors. Exposed function defaults, keyword defaults, and annotation dictionaries
