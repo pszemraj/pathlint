@@ -113,13 +113,13 @@ def discover_files(
         if excluded(candidate, alias):
             return
         try:
-            if not candidate.is_file():
-                return
             resolved = candidate.resolve()
+            if excluded(resolved, alias) or not resolved.is_file():
+                return
         except (OSError, RuntimeError) as error:
             errors.append((candidate, str(error)))
             return
-        if resolved.suffix == ".py" and not excluded(resolved, alias):
+        if resolved.suffix == ".py":
             files.add(resolved)
 
     def walk(root: Path, alias: Path) -> None:
@@ -218,7 +218,7 @@ def discover_files(
                             else:
                                 if excluded(candidate, candidate_alias):
                                     continue
-                                if candidate.is_dir() and not candidate.is_symlink():
+                                if not candidate.is_symlink() and candidate.is_dir():
                                     if not excluded(candidate, candidate_alias, directory=True):
                                         scan(candidate, candidate_alias)
                                 else:
@@ -262,6 +262,6 @@ def discover_files(
             else:
                 scan(path, alias)
         except OSError as error:
-            if not is_excluded(alias, exclude_patterns):
+            if not is_excluded(path, exclude_patterns) and not is_excluded(alias, exclude_patterns):
                 errors.append((path, str(error)))
     return sorted(files), errors

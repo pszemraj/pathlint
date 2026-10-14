@@ -504,13 +504,16 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
 
 @pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
 @pytest.mark.parametrize("respect_gitignore", [False, True])
+@pytest.mark.parametrize("named", [False, True])
 def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
-    repo: Path, respect_gitignore: bool
+    repo: Path, respect_gitignore: bool, named: bool
 ) -> None:
     target = write(repo, "blocked/x.py")
     link = repo / "a_link.py"
     link.symlink_to(target)
     wanted = write(repo, "z.py")
+    source = "import os\nos.path.exists('example')\n"
+    wanted.write_text(source, encoding="utf-8")
     git(repo, "add", "blocked/x.py", "a_link.py", "z.py")
     blocked = target.parent
     original_mode = blocked.stat().st_mode
@@ -518,15 +521,55 @@ def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
     try:
         if os.access(blocked, os.X_OK):
             pytest.skip("Current user bypasses directory permissions")
-        files, errors = discover_files([repo], respect_gitignore=respect_gitignore)
+        paths = [link, wanted] if named else [repo]
+        files, errors = discover_files(paths, respect_gitignore=respect_gitignore)
         assert files == [wanted]
-        assert len(errors) == 2 + int(respect_gitignore)
-        assert any(path == link for path, _ in errors)
+        assert len(errors) == (1 if named else 2 + int(respect_gitignore))
+        assert any(path == (target if named else link) for path, _ in errors)
+        for pattern in ("blocked", "blocked/", "./blocked", str(blocked), f"{blocked}/"):
+            assert discover_files(
+                paths, exclude_patterns=(pattern,), respect_gitignore=respect_gitignore
+            ) == ([wanted], [])
+        if named:
+            for pattern in ("a_link.py", "./a_link.py", "x.py", "blocked/x.py", str(target)):
+                assert discover_files(
+                    paths, exclude_patterns=(pattern,), respect_gitignore=respect_gitignore
+                ) == ([wanted], [])
+        for pattern in ("a_link.py/", "x.py/"):
+            assert discover_files(
+                paths, exclude_patterns=(pattern,), respect_gitignore=respect_gitignore
+            ) == (files, errors)
         assert discover_files(
-            [repo],
+            paths,
             exclude_patterns=("a_link.py", "blocked"),
             respect_gitignore=respect_gitignore,
         ) == ([wanted], [])
+
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+        if "COV_CORE_SOURCE" in env:
+            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
+        for command in (["files"], ["check", "--output-format", "json"], ["fix", "--dry-run"]):
+            args = [*command, *map(str, paths), "--exclude", "blocked/"]
+            if not respect_gitignore:
+                args.append("--no-gitignore")
+            result = subprocess.run(
+                [sys.executable, "-m", "pathlint", *args],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == int(command[0] != "files")
+            assert result.stderr == ""
+            if command[0] == "check":
+                report = json.loads(result.stdout)
+                assert report["errors"] == []
+                assert report["summary"]["files_checked"] == 1
+                assert [entry["path"] for entry in report["diagnostics"]] == ["z.py"]
+            else:
+                assert "z.py" in result.stdout
+        assert wanted.read_text(encoding="utf-8") == source
     finally:
         blocked.chmod(original_mode)
 
