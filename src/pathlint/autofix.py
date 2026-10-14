@@ -269,19 +269,30 @@ class _PathFixer(OSPathDetector):
         self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     def visit_Match(self, node: ast.AST) -> None:
-        """Merge each match case with the possibility that no case executes.
+        """Merge case bodies and bindings retained when patterns or guards fail.
 
         :param ast.AST node: Match statement with a subject and case suites.
         """
         self.visit(node.subject)
         scope = self.scopes[-1]
         before = scope.copy()
+        fallthrough = before
         alternatives = [before]
         for case in node.cases:
             scope.clear()
-            scope.update(before)
-            self.visit(case)
+            scope.update(fallthrough)
+            self.visit(case.pattern)
+            if case.guard:
+                self.visit(case.guard)
+            captured = scope.copy()
+            for statement in case.body:
+                self.visit(statement)
             alternatives.append(scope.copy())
+            # Captures and guard assignments can survive a failed guard. A taken
+            # case body, however, never flows into the next case.
+            self.merge_bindings([fallthrough, captured])
+            fallthrough = scope.copy()
+        alternatives.append(fallthrough)
         self.merge_bindings(alternatives)
 
     def visit_Call(self, node: ast.Call) -> None:

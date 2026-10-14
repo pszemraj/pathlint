@@ -432,6 +432,46 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
     assert run(source) == "custom"
 
 
+@pytest.mark.skipif(not hasattr(ast, "Match"), reason="Pattern matching requires Python 3.10")
+@pytest.mark.parametrize(
+    ("match", "expected", "changes"),
+    [
+        (
+            "match custom:\n    case os if False:\n        pass\n"
+            "    case _:\n        result = os.path.exists('missing')\n",
+            "custom",
+            False,
+        ),
+        (
+            "match custom:\n    case os if False:\n        import os\n"
+            "result = os.path.exists('missing')\n",
+            "custom",
+            False,
+        ),
+        (
+            "match 1:\n    case _ if (os := custom) and False:\n        pass\n"
+            "    case _:\n        result = os.path.exists('missing')\n",
+            "custom",
+            False,
+        ),
+        (
+            "match 1:\n    case 0:\n        os = custom\n"
+            "    case _:\n        result = os.path.exists('missing')\n",
+            False,
+            True,
+        ),
+    ],
+)
+def test_failed_match_guards_retain_bindings(match: str, expected: object, changes: bool) -> None:
+    source = (
+        "import os\nfrom types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n" + match
+    )
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    assert run(updated) == run(source) == expected
+
+
 @pytest.mark.parametrize(
     "block",
     [
