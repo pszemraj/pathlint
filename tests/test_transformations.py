@@ -437,6 +437,25 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "body, lookup",
+    [
+        ("from os.path import basename", "Paths.basename('a/b')"),
+        ("if True:\n    from os.path import basename", "Paths.basename('a/b')"),
+        ("class Nested:\n    from os.path import basename", "Paths.Nested.basename('a/b')"),
+        (
+            "from os.path import basename\nvalue = basename('a/b')",
+            "Paths.basename('a/b') + Paths.value",
+        ),
+    ],
+)
+def test_import_cleanup_preserves_class_attributes(body: str, lookup: str) -> None:
+    source = f"class Paths:\n{indent(body, '    ')}\nresult = {lookup}\n"
+    updated, _ = fix_content(source)
+    assert "from os.path import basename" in updated
+    assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize(
     "declaration",
     [
         '__all__ = ["basename"]',

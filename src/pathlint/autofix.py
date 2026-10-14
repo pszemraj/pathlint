@@ -525,6 +525,13 @@ def _clean_imports(content: str) -> tuple[str, int]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
     }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            # Class imports expose attributes even without a bare-name use.
+            bindings = _ScopeNames()
+            for statement in node.body:
+                bindings.visit(statement)
+            referenced.update(bindings.names)
     os_path_used = any(
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
