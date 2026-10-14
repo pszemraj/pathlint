@@ -421,6 +421,39 @@ def test_git_directory_warnings_honor_default_and_alias_exclusions(
             directory.chmod(0o755)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
+@pytest.mark.parametrize("root_suffix", ["", "\n"])
+def test_git_subdirectory_warnings_use_worktree_paths(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, root_suffix: str
+) -> None:
+    if root_suffix:
+        repo = repo.rename(repo.with_name(repo.name + root_suffix))
+        monkeypatch.chdir(repo)
+    scan_root = repo / "src"
+    wanted = write(scan_root, "keep.py")
+    blocked = [scan_root / "blocked", repo / "outside"]
+    for directory in blocked:
+        write(directory, "hidden.py")
+        directory.chmod(0)
+    try:
+        if any(os.access(directory, os.X_OK) for directory in blocked):
+            pytest.skip("Current user bypasses directory permissions")
+        files, errors = discover_files([scan_root])
+        assert files == [wanted]
+        assert [path for path, _ in errors] == [blocked[0]]
+        for pattern in ("src/blocked/", "./src/blocked/", str(blocked[0]) + "/"):
+            assert discover_files([scan_root], exclude_patterns=(pattern,)) == ([wanted], [])
+
+        alias = repo.parent / "alias"
+        alias.symlink_to(scan_root, target_is_directory=True)
+        monkeypatch.chdir(repo.parent)
+        for pattern in ("alias/blocked/", "./alias/blocked/", str(alias / "blocked") + "/"):
+            assert discover_files([alias], exclude_patterns=(pattern,)) == ([wanted], [])
+    finally:
+        for directory in blocked:
+            directory.chmod(0o755)
+
+
 def test_successful_git_listing_preserves_other_stderr(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -191,10 +191,11 @@ def discover_files(
                         errors.append((root, listing.stderr.decode(errors="replace").strip()))
                         return
                     directory_warning = rb"warning: could not open directory '(.*?)': [^\n]*\n"
+                    worktree_root = Path(os.fsdecode(worktree.stdout.removesuffix(b"\n")))
                     for warning in re.finditer(directory_warning, listing.stderr, re.DOTALL):
-                        relative = Path(os.fsdecode(warning[1]))
-                        candidate = root / relative
-                        if not excluded(candidate, alias / relative, directory=True):
+                        candidate = worktree_root / os.fsdecode(warning[1])
+                        candidate_alias = alias / candidate.relative_to(root)
+                        if not excluded(candidate, candidate_alias, directory=True):
                             errors.append((candidate, warning[0].decode(errors="replace").strip()))
                     remaining = re.sub(directory_warning, b"", listing.stderr, flags=re.DOTALL)
                     if remaining.strip():
