@@ -34,7 +34,7 @@ def run(source: str) -> object:
         ("from os.path import isabs", "isabs(FILE)"),
         ("import os", "os.path.basename(FILE)"),
         ("import os", "os.path.dirname(FILE)"),
-        ("import os", "os.path.expanduser(FILE)"),
+        ("import os", "os.path.expanduser('directory')"),
         ("import os", "os.path.join('directory', 'file')"),
         ("import os", "os.path.basename(os.path.join('directory', 'file'))"),
         ("import pathlib\nimport os", "os.path.isabs(FILE)"),
@@ -90,6 +90,87 @@ def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
         assert ntpath.isabs(value)
         assert not PureWindowsPath(value).is_absolute()
     assert run(fix_content(original)[0]) == run(original)
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        ("join", ("a/b", "c")),
+        ("join", ("a", "b/c")),
+        ("join", (r"a\\b", "c")),
+        ("join", (r"a\.\b", "c")),
+        ("join", (r".\a", "b")),
+        ("join", ("C:.", "b")),
+        ("join", ("C:a", "C:")),
+        ("join", (r"C:\a", "C:")),
+        ("dirname", ("a/b/c",)),
+        ("dirname", ("/file",)),
+        ("dirname", ("C:/file",)),
+        ("dirname", ("\\/file",)),
+        ("dirname", ("a/b\\c",)),
+        ("dirname", ("a\\\\b/c",)),
+        ("dirname", ("a\\.\\b/c",)),
+        ("dirname", ("C:./a",)),
+        ("dirname", (r"\./a",)),
+        ("expanduser", ("a/b",)),
+        ("expanduser", (r"a\\b",)),
+        ("expanduser", (r"a\.\b",)),
+        ("expanduser", (r".\a",)),
+        ("expanduser", ("C:.",)),
+    ],
+)
+def test_windows_separator_spellings_stay_unchanged(
+    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
+) -> None:
+    """Keep literal spellings whose Windows string results pathlib normalizes."""
+    from types import SimpleNamespace
+
+    from pathlint import autofix
+
+    original_result = getattr(ntpath, method)(*args)
+    path = PureWindowsPath(*args)
+    replacement_result = str(path.parent if method == "dirname" else path)
+    assert original_result != replacement_result
+    original = (
+        f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
+    )
+    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
+    assert fix_content(original) == (original, 0)
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        ("join", ("a", "b")),
+        ("join", (r"a\b", "c")),
+        ("join", ("C:", "b")),
+        ("join", ("C:a", "D:")),
+        ("join", ("C:a", "C:b")),
+        ("dirname", ("a/b",)),
+        ("dirname", ("a\\b/c",)),
+        ("expanduser", ("a",)),
+        ("expanduser", (r"a\b",)),
+        ("expanduser", ("C:",)),
+    ],
+)
+def test_windows_exact_separator_spellings_remain_supported(
+    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
+) -> None:
+    """Retain supported Windows literals when their string results are exact."""
+    from types import SimpleNamespace
+
+    from pathlint import autofix
+
+    expected = getattr(ntpath, method)(*args)
+    path = PureWindowsPath(*args)
+    assert expected == str(path.parent if method == "dirname" else path)
+    original = (
+        f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
+    )
+    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
+    updated, count = fix_content(original)
+    assert count > 0
+    assert updated != original
 
 
 @pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])

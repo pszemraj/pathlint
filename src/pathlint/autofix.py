@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import ast
 import difflib
+import ntpath
 import sys
 import tokenize
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pathlint.linter import OSPathDetector, _ScopeNames
 
@@ -423,6 +424,24 @@ class _PathFixer(OSPathDetector):
             for arg in node.args
         ):
             return
+        if sys.platform == "win32" and function in {"join", "dirname", "expanduser"}:
+            literal_args = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ]
+            if any(
+                ntpath.dirname(value) != str(PureWindowsPath(value).parent)
+                if function == "dirname"
+                else value != str(PureWindowsPath(value))
+                for value in literal_args
+            ) or (
+                function == "join"
+                and len(literal_args) == len(node.args)
+                and ntpath.join(*literal_args) != str(PureWindowsPath(*literal_args))
+            ):
+                # String-returning calls can retain literal spellings normalized by pathlib.
+                return
         # These literal spellings have different string results under pathlib.
         if function != "isabs" and any(
             isinstance(arg, ast.Constant)
