@@ -14,13 +14,7 @@ import pytest
 
 from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector, lint_file
-
-
-def run(source: str) -> object:
-    """Execute a fixture and return its result."""
-    namespace: dict[str, object] = {}
-    exec(compile(source, "<fixture>", "exec"), namespace)
-    return namespace["result"]
+from tests.helpers import run
 
 
 @pytest.mark.parametrize(
@@ -287,7 +281,7 @@ def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
     ],
 )
 def test_wildcard_imports_leave_source_unchanged(
-    tmp_path: Path, source: str, expected: str
+    tmp_path: Path, source: str, expected: str, source_env: dict[str, str]
 ) -> None:
     (tmp_path / "wildcard_exports.py").write_text(
         "from types import SimpleNamespace\n"
@@ -298,14 +292,11 @@ def test_wildcard_imports_leave_source_unchanged(
     updated, count = fix_content(source)
     assert count == 0
     assert updated == source
-    environment = os.environ.copy()
-    if environment.get("COV_CORE_SOURCE"):
-        environment["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
     for content in (source, updated):
         result = subprocess.run(
             [sys.executable, "-c", content + "\nprint(result)\n"],
             cwd=tmp_path,
-            env=environment,
+            env=source_env,
             capture_output=True,
             text=True,
             check=False,
@@ -460,12 +451,76 @@ def test_byte_path_expressions_preserve_results(method: str, argument: str) -> N
     assert run(updated) == run(source)
 
 
-def test_join_with_byte_expression_in_later_argument_stays_unchanged() -> None:
-    source = (
-        "import os\ndirectory = b'directory'\nresult = os.path.join(directory, b'fi' + b'le')\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == b"directory/file"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            "import os\ndirectory = b'directory'\nresult = os.path.join(directory, b'fi' + b'le')\n",
+            b"directory/file",
+            id="test_join_with_byte_expression_in_later_argument_stays_unchanged",
+        ),
+        pytest.param(
+            "import os\nresult = os.path.basename({**{b'path': 'directory/file'}}[b'path'])\n",
+            "file",
+            id="test_byte_keys_in_unpacked_mapping_paths_are_conservatively_skipped",
+        ),
+        pytest.param(
+            "import os\nclass TextPath(str):\n    def __getitem__(self, index):\n"
+            "        return b'directory/file'\n"
+            "class Source:\n    def __str__(self):\n        return TextPath('directory/file')\n"
+            "result = os.path.basename(str(Source())[0])\n",
+            b"file",
+            id="test_text_subclass_index_byte_results_stay_unchanged",
+        ),
+        pytest.param(
+            "import os.path as osp\n"
+            "def check():\n    return osp.basename('directory\\\\file')\n"
+            "import ntpath as osp\n"
+            "result = check()\n"
+            "import os.path as osp\n",
+            "file",
+            id="test_deferred_alias_with_conflicting_import_origins_is_not_rewritten",
+        ),
+        # Preserve nested deferred calls when their source contributes to a debug label.
+        pytest.param(
+            "import os.path as p\n"
+            """label = f"{(lambda: p.basename('a/b'))=}"\n"""
+            "result = label.split('=', 1)[0]\n",
+            "(lambda: p.basename('a/b'))",
+            id="test_debug_fstring_deferred_lambda_retains_its_label",
+        ),
+        # Analyze assignments inside preserved debug fields before later calls.
+        pytest.param(
+            "import os\nfrom types import SimpleNamespace\n"
+            "custom = SimpleNamespace(path=SimpleNamespace(basename=str.upper))\n"
+            """label = f"{(os := custom)=}"\n"""
+            "result = os.path.basename('a/b')\n",
+            "A/B",
+            id="test_debug_fstring_walrus_still_updates_bindings",
+        ),
+        pytest.param(
+            "import os.path as osp\n"
+            "def configure():\n    global osp\n    del osp\nconfigure()\n"
+            "try:\n    result = osp.basename('a/b')\n"
+            "except NameError:\n    result = 'missing'\n",
+            "missing",
+            id="test_explicit_global_deletion_preserves_immediate_name_error",
+        ),
+        pytest.param(
+            "from types import SimpleNamespace\n"
+            "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+            "def outer():\n    import os.path as osp\n"
+            "    def check():\n        return osp.basename('a/b')\n    return check\n"
+            "check = outer()\ncheck.__closure__[0].cell_contents = custom\nresult = check()\n",
+            "custom",
+            id="test_closure_cell_rebinding_leaves_source_unchanged",
+        ),
+    ],
+)
+def test_unrewritten_sources_preserve_runtime_results(source: str, expected: object) -> None:
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -603,12 +658,6 @@ def test_rich_comparison_byte_results_stay_unchanged(method: str, operator: str)
     assert run(source) == b"file"
 
 
-def test_byte_keys_in_unpacked_mapping_paths_are_conservatively_skipped() -> None:
-    source = "import os\nresult = os.path.basename({**{b'path': 'directory/file'}}[b'path'])\n"
-    assert fix_content(source) == (source, 0)
-    assert run(source) == "file"
-
-
 @pytest.mark.parametrize("value", [b"directory/file", "directory/file"])
 def test_unknown_call_return_types_stay_unchanged(value: Union[bytes, str]) -> None:
     source = (
@@ -700,17 +749,6 @@ def test_reflected_modulo_byte_results_stay_unchanged(left: str, parent: str) ->
         f"class Remainder({parent}):\n    def __rmod__(self, other):\n"
         "        return b'directory/file'\n"
         f"result = os.path.basename({left} % Remainder())\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == b"file"
-
-
-def test_text_subclass_index_byte_results_stay_unchanged() -> None:
-    source = (
-        "import os\nclass TextPath(str):\n    def __getitem__(self, index):\n"
-        "        return b'directory/file'\n"
-        "class Source:\n    def __str__(self):\n        return TextPath('directory/file')\n"
-        "result = os.path.basename(str(Source())[0])\n"
     )
     assert fix_content(source) == (source, 0)
     assert run(source) == b"file"
@@ -812,19 +850,6 @@ def test_debug_fstring_comment_before_equals_is_preserved() -> None:
     assert run(updated) == run(original)
 
 
-def test_debug_fstring_deferred_lambda_retains_its_label() -> None:
-    """Preserve nested deferred calls when their source contributes to a debug label."""
-    original = (
-        "import os.path as p\n"
-        """label = f"{(lambda: p.basename('a/b'))=}"\n"""
-        "result = label.split('=', 1)[0]\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 0
-    assert updated == original
-    assert run(updated) == run(original) == "(lambda: p.basename('a/b'))"
-
-
 @pytest.mark.parametrize(
     "expression",
     [
@@ -842,20 +867,6 @@ def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression
     assert "_Path(" in updated
     assert run(updated) == run(original)
     assert fix_content(updated) == (updated, 0)
-
-
-def test_debug_fstring_walrus_still_updates_bindings() -> None:
-    """Analyze assignments inside preserved debug fields before later calls."""
-    original = (
-        "import os\nfrom types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(basename=str.upper))\n"
-        """label = f"{(os := custom)=}"\n"""
-        "result = os.path.basename('a/b')\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 0
-    assert updated == original
-    assert run(updated) == run(original) == "A/B"
 
 
 @pytest.mark.parametrize(
@@ -985,7 +996,7 @@ def test_generated_import_precedes_first_decorator(source: str, newline: str) ->
     assert fix_content(updated) == (updated, 0)
 
 
-def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
+def test_cli_persists_valid_decorated_fix(tmp_path: Path, source_env: dict[str, str]) -> None:
     """Execute the persisted CLI fix for a decorated first definition."""
     source = (
         "from os.path import basename\n@lambda fn: fn\ndef check():\n"
@@ -995,6 +1006,7 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
     target.write_text(source, encoding="utf-8")
     process = subprocess.run(
         [sys.executable, "-m", "pathlint", "fix", str(target)],
+        env=source_env,
         capture_output=True,
         text=True,
         timeout=10,
@@ -1005,31 +1017,33 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
     assert run(persisted) == run(source) == "b"
 
 
-def test_partial_named_import_keeps_unsupported_function() -> None:
-    original = (
-        "from os.path import isabs as present, splitext\n"
-        "result = (present('directory/file'), splitext('dir/file.ext'))\n"
-    )
+@pytest.mark.parametrize(
+    ("original", "preserved"),
+    [
+        pytest.param(
+            "from os.path import isabs as present, splitext\n"
+            "result = (present('directory/file'), splitext('dir/file.ext'))\n",
+            "from os.path import isabs as present, splitext",
+            id="test_partial_named_import_keeps_unsupported_function",
+        ),
+        pytest.param(
+            "from os.path import (\n    isabs,  # important comment\n)\n"
+            "result = isabs('directory/file')\n",
+            "# important comment",
+            id="test_multiline_import_comments_are_preserved",
+        ),
+    ],
+)
+def test_fixed_sources_preserve_import_content(original: str, preserved: str) -> None:
     updated, count = fix_content(original)
     assert count == 1
-    assert "from os.path import isabs as present, splitext" in updated
+    assert preserved in updated
     assert run(updated) == run(original)
 
 
 def test_wildcard_import_is_not_deleted() -> None:
     original = "from os.path import *\nresult = isabs('file')\n"
     assert fix_content(original) == (original, 0)
-
-
-def test_multiline_import_comments_are_preserved() -> None:
-    original = (
-        "from os.path import (\n    isabs,  # important comment\n)\n"
-        "result = isabs('directory/file')\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 1
-    assert "# important comment" in updated
-    assert run(updated) == run(original)
 
 
 @pytest.mark.parametrize(
@@ -1198,18 +1212,6 @@ def test_explicit_global_writes_prevent_immediate_alias_fixes(writer: str) -> No
     assert run(updated) == run(source) == "b"
 
 
-def test_explicit_global_deletion_preserves_immediate_name_error() -> None:
-    source = (
-        "import os.path as osp\n"
-        "def configure():\n    global osp\n    del osp\nconfigure()\n"
-        "try:\n    result = osp.basename('a/b')\n"
-        "except NameError:\n    result = 'missing'\n"
-    )
-    updated, count = fix_content(source)
-    assert (updated, count) == (source, 0)
-    assert run(updated) == run(source) == "missing"
-
-
 def test_explicit_global_write_prevents_immediate_string_conversion() -> None:
     source = (
         "import os.path as osp\n"
@@ -1268,18 +1270,6 @@ def test_deferred_string_conversion_respects_later_builtin_shadowing(
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
     assert run(updated) == run(source) == str(Path("directory") / "file")
-
-
-def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> None:
-    source = (
-        "import os.path as osp\n"
-        "def check():\n    return osp.basename('directory\\\\file')\n"
-        "import ntpath as osp\n"
-        "result = check()\n"
-        "import os.path as osp\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == "file"
 
 
 @pytest.mark.parametrize(
@@ -1730,19 +1720,6 @@ def test_module_registry_writes_leave_source_unchanged(
             del sys.modules[name]
         else:
             sys.modules[name] = previous
-
-
-def test_closure_cell_rebinding_leaves_source_unchanged() -> None:
-    source = (
-        "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
-        "def outer():\n    import os.path as osp\n"
-        "    def check():\n        return osp.basename('a/b')\n    return check\n"
-        "check = outer()\ncheck.__closure__[0].cell_contents = custom\nresult = check()\n"
-    )
-    updated, count = fix_content(source)
-    assert (updated, count) == (source, 0)
-    assert run(updated) == run(source) == "custom"
 
 
 @pytest.mark.parametrize(

@@ -339,7 +339,9 @@ def test_git_listing_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
-def test_git_unreadable_untracked_directories_report_warnings_and_continue(repo: Path) -> None:
+def test_git_unreadable_untracked_directories_report_warnings_and_continue(
+    repo: Path, source_env: dict[str, str]
+) -> None:
     blocked = [repo / "blocked", repo / "quoted'\nuni-ä"]
     wanted = write(repo, "z.py")
     source = "import os\nos.path.isabs('example')\n"
@@ -356,14 +358,11 @@ def test_git_unreadable_untracked_directories_report_warnings_and_continue(repo:
         assert len(errors) == 2
         assert all("Permission denied" in message for _, message in errors)
 
-        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-        if "COV_CORE_SOURCE" in env:
-            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
         for command in (["files"], ["check", "--output-format", "json"], ["fix", "--dry-run"]):
             result = subprocess.run(
                 [sys.executable, "-m", "pathlint", *command, "."],
                 cwd=repo,
-                env=env,
+                env=source_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -592,7 +591,7 @@ def test_successful_git_listing_preserves_other_stderr(
 )
 @pytest.mark.parametrize("named", [False, True])
 def test_git_unreadable_candidates_honor_exclusions_and_continue(
-    repo: Path, patterns: tuple[str, ...], named: bool
+    repo: Path, patterns: tuple[str, ...], named: bool, source_env: dict[str, str]
 ) -> None:
     blocked_file = write(repo, "blocked/a.py")
     wanted = write(repo, "z.py")
@@ -617,9 +616,6 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
             assert {path for path, _ in errors} <= {blocked_file, blocked}
             assert all("Permission denied" in message for _, message in errors)
 
-        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-        if "COV_CORE_SOURCE" in env:
-            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
         exclusions = [argument for pattern in patterns for argument in ("--exclude", pattern)]
         for command in (
             ["files"],
@@ -629,7 +625,7 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
             result = subprocess.run(
                 [sys.executable, "-m", "pathlint", *command, *map(str, paths), *exclusions],
                 cwd=repo,
-                env=env,
+                env=source_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -653,7 +649,7 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
 @pytest.mark.parametrize("respect_gitignore", [False, True])
 @pytest.mark.parametrize("named", [False, True])
 def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
-    repo: Path, respect_gitignore: bool, named: bool
+    repo: Path, respect_gitignore: bool, named: bool, source_env: dict[str, str]
 ) -> None:
     target = write(repo, "blocked/x.py")
     link = repo / "a_link.py"
@@ -692,9 +688,6 @@ def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
             respect_gitignore=respect_gitignore,
         ) == ([wanted], [])
 
-        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-        if "COV_CORE_SOURCE" in env:
-            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
         for command in (["files"], ["check", "--output-format", "json"], ["fix", "--dry-run"]):
             args = [*command, *map(str, paths), "--exclude", "blocked/"]
             if not respect_gitignore:
@@ -702,7 +695,7 @@ def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
             result = subprocess.run(
                 [sys.executable, "-m", "pathlint", *args],
                 cwd=repo,
-                env=env,
+                env=source_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -775,7 +768,10 @@ def test_resolution_errors_are_reported(
 
 @pytest.mark.parametrize("patterns", [(), ("loop.py",), ("./loop.py",), ("loop.py/",)])
 def test_cyclic_symlink_input_does_not_discard_valid_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patterns: tuple[str, ...]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patterns: tuple[str, ...],
+    source_env: dict[str, str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
     wanted = write(tmp_path, "keep.py")
@@ -790,15 +786,12 @@ def test_cyclic_symlink_input_does_not_discard_valid_files(
         assert errors[0][0] == loop
         assert "loop" in errors[0][1].lower()
 
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-    if "COV_CORE_SOURCE" in env:
-        env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
     exclusions = [argument for pattern in patterns for argument in ("--exclude", pattern)]
     for command in (["files"], ["check", "--output-format", "json"]):
         result = subprocess.run(
             [sys.executable, "-m", "pathlint", *command, "loop.py", "keep.py", *exclusions],
             cwd=tmp_path,
-            env=env,
+            env=source_env,
             capture_output=True,
             text=True,
             check=False,

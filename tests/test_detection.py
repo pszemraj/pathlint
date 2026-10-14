@@ -14,6 +14,7 @@ import pytest
 
 from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector, lint_file
+from tests.helpers import execute
 
 
 def offenses(source: str) -> set[int]:
@@ -80,9 +81,7 @@ def test_conditional_bindings_are_analyzed_independently(
         source += "observed = Example.result\n"
     else:
         source += body + "observed = result\n"
-    namespace: dict[str, object] = {}
-    exec(compile(source, "<branches>", "exec", dont_inherit=True), namespace)
-    assert namespace["observed"] == expected
+    assert execute(source)["observed"] == expected
     target = tmp_path / "branches.py"
     target.write_text(source, encoding="utf-8")
     findings = lint_file(target)
@@ -112,9 +111,7 @@ def test_dictionary_entries_follow_runtime_evaluation_order(
     assert bool(count) is changes
     assert bool(offenses(source)) is changes
     for content in (source, updated):
-        namespace: dict[str, object] = {}
-        exec(compile(content, "<dictionary>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == expected
+        assert execute(content)["result"] == expected
 
 
 @pytest.mark.parametrize(
@@ -165,9 +162,7 @@ def test_augmented_targets_follow_runtime_evaluation_order(
     assert bool(count) is changes
     assert bool(offenses(source)) is changes
     for content in (source, updated):
-        namespace: dict[str, object] = {}
-        exec(compile(content, "<augmented>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == expected
+        assert execute(content)["result"] == expected
 
 
 def test_augmented_name_binding_follows_its_value() -> None:
@@ -406,9 +401,7 @@ def test_private_alias_respects_class_name_mangling(method: bool) -> None:
     )
     assert not offenses(source)
     assert fix_content(source) == (source, 0)
-    namespace: dict[str, object] = {}
-    exec(compile(source, "<private-alias>", "exec", dont_inherit=True), namespace)
-    assert namespace["result"] == "custom"
+    assert execute(source)["result"] == "custom"
 
 
 def test_shadowed_function_alias_keeps_import_diagnostic_only() -> None:
@@ -482,9 +475,7 @@ def test_nested_external_declaration_selects_its_namespace(
     assert offenses(source) == ({7} if uses_import else set())
     updated, _ = fix_content(source)
     for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<external>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == (False if uses_import else "custom")
+        assert execute(content)["result"] == (False if uses_import else "custom")
 
 
 @pytest.mark.parametrize("declaration", ["global", "nonlocal"])
@@ -522,9 +513,7 @@ def test_immediate_class_external_writes_invalidate_owner(declaration: str, stat
     assert count == 0
     assert not offenses(source)
     for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == "custom"
+        assert execute(content)["result"] == "custom"
 
 
 @pytest.mark.parametrize("declaration", ["global", "nonlocal"])
@@ -563,8 +552,7 @@ def test_class_external_write_does_not_leave_import_visible(
     assert count == 0
     assert not offenses(source)
     for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
+        namespace = execute(content)
         expected = "deleted" if statement == "del os" else "custom"
         assert namespace["result"] == (expected, expected)
 
@@ -605,9 +593,7 @@ def test_class_deleted_binding_restores_global_import(
     updated, count = fix_content(source)
     assert count == 1
     for content in (source, updated):
-        namespace: dict[str, object] = {}
-        exec(compile(content, "<class-deletion>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == "b"
+        assert execute(content)["result"] == "b"
     assert fix_content(updated) == (updated, 0)
 
 
@@ -629,9 +615,7 @@ def test_nested_class_deleted_binding_uses_globals(cleanup: str, global_import: 
     assert offenses(source) == ({target_line} if global_import else set())
     updated, _ = fix_content(source)
     for content in (source, updated):
-        namespace: dict[str, object] = {}
-        exec(compile(content, "<nested-class-deletion>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == ("b" if global_import else "custom")
+        assert execute(content)["result"] == ("b" if global_import else "custom")
 
 
 @pytest.mark.parametrize("global_import", [False, True])
@@ -664,9 +648,7 @@ def test_class_missing_locals_and_methods_select_their_namespaces(global_import:
         else ("custom", "custom", "b", "custom", "b")
     )
     for content in (source, updated):
-        namespace: dict[str, object] = {}
-        exec(compile(content, "<class-lookups>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == expected
+        assert execute(content)["result"] == expected
 
 
 @pytest.mark.parametrize("scope", ["module", "function", "class-global", "class-nonlocal"])
@@ -694,9 +676,7 @@ def test_other_scope_deletions_do_not_restore_imports(scope: str, cleanup: str) 
         source += "    return Example.value\nresult = outer()\n"
     assert not offenses(source)
     assert fix_content(source) == (source, 0)
-    namespace: dict[str, object] = {}
-    exec(compile(source, "<deleted-binding>", "exec", dont_inherit=True), namespace)
-    assert namespace["result"] == "deleted"
+    assert execute(source)["result"] == "deleted"
 
 
 def test_class_import_does_not_escape_into_methods() -> None:
@@ -738,9 +718,7 @@ def test_annotated_assignment_binds_before_annotation() -> None:
     updated, count = fix_content(source)
     assert count == 0
     for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<annotation>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == "custom"
+        assert execute(content)["result"] == "custom"
 
 
 @pytest.mark.parametrize("future", ["", "from __future__ import annotations\n"])
@@ -829,9 +807,7 @@ def test_function_defaults_bind_before_annotations(definition: str, parameter: s
     updated, count = fix_content(source)
     assert count == 0
     for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<definition>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] == "custom"
+        assert execute(content)["result"] == "custom"
 
 
 @pytest.mark.parametrize("parameter", ["arg=(os := os)", "arg: (os := os) = None"])
@@ -845,9 +821,7 @@ def test_definition_walrus_does_not_become_function_local(parameter: str) -> Non
     )
     assert offenses(source) == {3}
     assert fix_content(source) == (source, 0)
-    namespace = {}
-    exec(compile(source, "<definition>", "exec", dont_inherit=True), namespace)
-    assert namespace["result"] is False
+    assert execute(source)["result"] is False
 
 
 @pytest.mark.parametrize(
@@ -1347,7 +1321,7 @@ def test_escaped_namespace_copies_exclude_fixes_without_hiding_findings(
     assert fix_content(source) == (source, 0)
 
 
-def test_alias_copy_cycles_have_finite_mutation_origins() -> None:
+def test_alias_copy_cycles_have_finite_mutation_origins(source_env: dict[str, str]) -> None:
     source = (
         "import os as alias\nalias = alias.path\nalias = alias.basename\n"
         "second = alias\nalias = second.child\n"
@@ -1360,7 +1334,7 @@ def test_alias_copy_cycles_have_finite_mutation_origins() -> None:
         "assert 'os.path.basename.__code__' in detector.mutated_attributes\n"
         "assert detector.resolve(ast.parse('osp.basename', mode='eval').body) is None\n"
     )
-    subprocess.run([sys.executable, "-c", program, source], timeout=5, check=True)
+    subprocess.run([sys.executable, "-c", program, source], env=source_env, timeout=5, check=True)
 
 
 def test_copied_alias_calls_remain_unresolved() -> None:
