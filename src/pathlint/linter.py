@@ -148,7 +148,7 @@ class OSPathDetector(ast.NodeVisitor):
         self.mutation_aliases: dict[str, set[str]] = defaultdict(set)
         self.deferred: list[
             tuple[
-                ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+                ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp,
                 list[dict[str, str | None]],
                 list[str],
                 list[set[str]],
@@ -160,11 +160,14 @@ class OSPathDetector(ast.NodeVisitor):
         self._collect_mutation_aliases(node)
         for statement in node.body:
             self.visit(statement)
-        # Function bodies use enclosing bindings after those scopes finish defining names.
+        # Deferred bodies use enclosing bindings after those scopes finish defining names.
         # This also avoids rewriting aliases that the enclosing scope reassigns later.
         for function, scopes, kinds, globals_ in self.deferred:
             self.scopes, self.scope_kinds = scopes.copy(), kinds.copy()
             self.scope_globals = globals_.copy()
+            if isinstance(function, ast.GeneratorExp):
+                self._visit_comprehension_body(function)
+                continue
             names = _ScopeNames()
             names.names.update(
                 argument.arg
@@ -387,8 +390,15 @@ class OSPathDetector(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Bind from-import aliases and record absolute os.path imports."""
         for alias in node.names:
-            name = alias.asname or alias.name
             origin = f"{node.module}.{alias.name}" if node.module and not node.level else None
+            if alias.name == "*":
+                # Unknown exports can replace any binding in this namespace.
+                # Update in place so deferred bodies see the invalidation too.
+                self.scopes[-1].update(dict.fromkeys(self.scopes[-1]))
+                if origin and origin.startswith("os.path."):
+                    self._record(node)
+                continue
+            name = alias.asname or alias.name
             self.scopes[-1][name] = origin
             if origin:
                 self.import_origins[name].add(origin)
@@ -485,10 +495,12 @@ class OSPathDetector(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
-    def _defer_body(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+    def _defer_body(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp
+    ) -> None:
         """Queue a body with live enclosing bindings for subsequent analysis.
 
-        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda node: Deferred body owner.
+        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp node: Deferred body owner.
         """
         self.deferred.append(
             (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
@@ -583,6 +595,8 @@ class OSPathDetector(ast.NodeVisitor):
         names = _ScopeNames()
         for statement in [node.target, *node.body]:
             names.visit(statement)
+        if "*" in names.names:
+            names.names.update(self.scopes[-1])
         self.scopes[-1].update(dict.fromkeys(names.names))
         entry = self.scopes[-1].copy()
         self.visit(node.target)
@@ -605,6 +619,8 @@ class OSPathDetector(ast.NodeVisitor):
         names = _ScopeNames()
         for statement in [node.test, *node.body]:
             names.visit(statement)
+        if "*" in names.names:
+            names.names.update(self.scopes[-1])
         self.scopes[-1].update(dict.fromkeys(names.names))
         self.visit(node.test)
         entry = self.scopes[-1].copy()
@@ -661,7 +677,7 @@ class OSPathDetector(ast.NodeVisitor):
     def visit_ListComp(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
     ) -> None:
-        """Visit comprehension targets locally and walrus bindings in their owner scope."""
+        """Visit the first iterable immediately and defer generator bodies."""
         self.visit(node.generators[0].iter)
         names = _ScopeNames()
         names.visit(node)
@@ -672,6 +688,18 @@ class OSPathDetector(ast.NodeVisitor):
         # repeated iterations; generator consumption and empty iterables are unknown.
         for name in names.names:
             self.scopes[owner][name] = None
+        if isinstance(node, ast.GeneratorExp):
+            self._defer_body(node)
+        else:
+            self._visit_comprehension_body(node)
+
+    def _visit_comprehension_body(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    ) -> None:
+        """Visit comprehension targets, filters, and values after its first iterable.
+
+        :param ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp node: Comprehension owner.
+        """
         self.scopes.append({})
         self.scope_kinds.append(
             "generator" if isinstance(node, ast.GeneratorExp) else "comprehension"

@@ -215,6 +215,160 @@ def test_only_actual_os_path_imports_are_resolved(source: str) -> None:
     assert offenses(source) == {}
 
 
+@pytest.mark.parametrize("loop", ["module", "for", "while"])
+@pytest.mark.parametrize(
+    ("imports", "name", "expression", "import_lines"),
+    [
+        ("import os", "os", "os.path.basename('a/b')", set()),
+        ("import os as system", "system", "system.path.basename('a/b')", set()),
+        ("import os.path as paths", "paths", "paths.basename('a/b')", {1}),
+        ("from os import path as paths", "paths", "paths.basename('a/b')", {1}),
+        ("from os.path import basename as base", "base", "base('a/b')", {1}),
+    ],
+)
+def test_wildcard_import_invalidates_prior_aliases(
+    imports: str, name: str, expression: str, import_lines: set[int], loop: str, tmp_path: Path
+) -> None:
+    plugin = (
+        "from types import SimpleNamespace\n"
+        "base = lambda value: 'custom'\n"
+        "paths = SimpleNamespace(basename=base)\n"
+        "os = SimpleNamespace(path=paths)\n"
+        "system = os\n"
+        f"__all__ = [{name!r}]\n"
+    )
+    (tmp_path / "plugin.py").write_text(plugin, encoding="utf-8")
+    source = f"{imports}\n"
+    if loop == "module":
+        source += f"from plugin import *\nresult = {expression}\n"
+    else:
+        source += (
+            "for _ in range(2):\n"
+            if loop == "for"
+            else "remaining = 2\nwhile remaining:\n    remaining -= 1\n"
+        )
+        source += indent(f"result = {expression}\nfrom plugin import *\n", "    ")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys\nsys.path.insert(0, {str(tmp_path)!r})\n" + source + "print(result)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "custom"
+    assert set(offenses(source)) == import_lines
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "module",
+        "function",
+        "lambda",
+        "method",
+        "local-import",
+        "class-global",
+        "class-fallback",
+    ],
+)
+@pytest.mark.parametrize("reimport", [False, True])
+def test_wildcard_import_respects_deferred_scopes_and_later_imports(
+    scope: str, reimport: bool
+) -> None:
+    source = "import os\nbefore = os.path.basename('a/b')\n"
+    body = "return os.path.basename('a/b')\n"
+    if scope == "function":
+        source += "def check():\n" + indent(body, "    ")
+    elif scope == "lambda":
+        source += "check = lambda: os.path.basename('a/b')\n"
+    elif scope == "method":
+        source += "class Example:\n    def check(self):\n" + indent(body, "        ")
+    elif scope == "local-import":
+        source += "def check():\n    import os\n" + indent(body, "    ")
+    elif scope in {"class-global", "class-fallback"}:
+        source += "def check():\n    import os\n    class Example:\n"
+        source += (
+            "        global os\n"
+            if scope == "class-global"
+            else "        os = object()\n        del os\n"
+        )
+        source += "        result = os.path.basename('a/b')\n    return Example.result\n"
+    source += "from plugin import *\n"
+    if reimport:
+        source += "import os\n"
+    if scope == "module":
+        source += "result = os.path.basename('a/b')\n"
+    expected = {2}
+    if reimport or scope == "local-import":
+        expected.update(
+            line
+            for line, content in enumerate(source.splitlines(), 1)
+            if "os.path.basename" in content
+        )
+    assert set(offenses(source)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from os.path import *", {1}),
+        ("from os.path import *\nimport os\nos.path.basename('a/b')", {1, 3}),
+        ("from .os.path import *", set()),
+        ("from os import *", set()),
+    ],
+)
+def test_wildcard_import_retains_absolute_os_path_diagnostic(
+    source: str, expected: set[int]
+) -> None:
+    assert set(offenses(source)) == expected
+
+
+@pytest.mark.parametrize("wildcard_first", [False, True])
+@pytest.mark.parametrize(
+    ("expression", "deferred"),
+    [
+        ("(os.path.basename('a/b') for _ in [1])", True),
+        ("(value for value in [os.path.basename('a/b')])", False),
+        ("(value for _ in [1] for value in [os.path.basename('a/b')])", True),
+        ("[os.path.basename('a/b') for _ in [1]]", False),
+        ("{os.path.basename('a/b') for _ in [1]}", False),
+        ("{os.path.basename('a/b'): _ for _ in [1]}", False),
+    ],
+)
+def test_comprehension_bindings_follow_evaluation_time(
+    expression: str, deferred: bool, wildcard_first: bool, tmp_path: Path
+) -> None:
+    (tmp_path / "plugin.py").write_text(
+        "from types import SimpleNamespace\n"
+        "__all__ = ['os']\n"
+        "os = SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))\n",
+        encoding="utf-8",
+    )
+    source = "import os\n"
+    if wildcard_first:
+        source += "from plugin import *\n"
+    source += f"values = {expression}\n"
+    source += "import os\n" if wildcard_first else "from plugin import *\n"
+    source += "result = list(values)[0]\n"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys\nsys.path.insert(0, {str(tmp_path)!r})\n" + source + "print(result)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    real_os = deferred == wildcard_first
+    assert result.stdout.strip() == ("b" if real_os else "custom")
+    assert set(offenses(source)) == ({3 if wildcard_first else 2} if real_os else set())
+    assert fix_content(source) == (source, 0)
+
+
 @pytest.mark.parametrize(
     "source",
     [

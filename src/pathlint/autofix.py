@@ -175,10 +175,12 @@ class _PathFixer(OSPathDetector):
         while self.path_name in names:
             self.path_name = "PathlintPath" if self.path_name == "Path" else self.path_name + "_"
 
-    def _defer_body(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+    def _defer_body(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp
+    ) -> None:
         """Freeze certain enclosing imports without borrowing later bindings.
 
-        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda node: Deferred body owner.
+        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp node: Deferred body owner.
         """
         scopes = [{**scope, **dict.fromkeys(self.deferred_rebindings)} for scope in self.scopes]
         self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))

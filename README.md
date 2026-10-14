@@ -179,9 +179,11 @@ callback = os.path.join
 Pathlint resolves imported names in function, class, and comprehension scopes
 so ordinary local shadowing is not mistaken for `os.path`. Private aliases in class
 scopes are left unresolved because Python mangles their names. Deleted class
-locals and cleared exception aliases fall back to module globals. Function bodies
-use the enclosing scope's final bindings for detection; dynamic rebinding can
-prevent resolution. Detection inspects `if` branches independently and uses literal
+locals and cleared exception aliases fall back to module globals. Function and
+generator bodies use the enclosing scope's final bindings for detection; a
+generator's first iterable is inspected immediately. Dynamic rebinding can prevent
+resolution. Wildcard imports invalidate tracked bindings; later explicit imports
+can restore them. Detection inspects `if` branches independently and uses literal
 conditions when merging bindings in the current scope. Loop bindings are merged
 conservatively across iterations and `else` suites. Fixes in deferred bodies
 require enclosing imports to exist when the function, lambda, or generator is
