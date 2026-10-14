@@ -195,7 +195,16 @@ def discover_files(
                             if not excluded(candidate, candidate_alias, directory=True):
                                 scan(candidate, candidate_alias)
                         else:
-                            add_file(candidate, candidate_alias)
+                            # Outer indexes can contain individual files beneath an
+                            # embedded repository instead of a single gitlink entry.
+                            nested = root
+                            for part in candidate.relative_to(root).parts[:-1]:
+                                nested /= part
+                                if (nested / ".git").exists():
+                                    scan(nested, alias / nested.relative_to(root))
+                                    break
+                            else:
+                                add_file(candidate, candidate_alias)
                     return
             except OSError as error:
                 errors.append((root, str(error)))

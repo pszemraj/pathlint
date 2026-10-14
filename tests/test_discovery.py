@@ -234,6 +234,29 @@ def test_tracked_nested_repository_is_discovered(repo: Path) -> None:
     assert discover_files([repo]) == ([wanted], [])
 
 
+@pytest.mark.parametrize("git_file", [False, True])
+def test_outer_tracked_files_use_nested_repository_ignores(repo: Path, git_file: bool) -> None:
+    nested = repo / "nested"
+    wanted = write(repo, "nested/keep.py")
+    ignored = write(repo, "nested/ignored.py")
+    tracked = write(repo, "nested/tracked.py")
+    git(repo, "add", "nested/ignored.py", "nested/tracked.py")
+    if git_file:
+        git(nested, "init", "-q", "--separate-git-dir", str(repo.parent / "nested.git"))
+    else:
+        git(nested, "init", "-q")
+    git(nested, "add", "tracked.py")
+    (nested / ".gitignore").write_text("ignored.py\ntracked.py\n", encoding="utf-8")
+    expected = sorted([wanted, tracked])
+    assert discover_files([repo, nested, wanted]) == (expected, [])
+    assert discover_files([nested]) == (expected, [])
+    assert discover_files([repo], exclude_patterns=("nested/",)) == ([], [])
+    assert discover_files([repo], respect_gitignore=False) == (
+        sorted([wanted, ignored, tracked]),
+        [],
+    )
+
+
 def test_git_handles_newlines_and_spaces_in_filenames(repo: Path) -> None:
     wanted = [write(repo, "with space.py"), write(repo, "with\nnewline.py")]
     assert discover_files([repo]) == (sorted(wanted), [])
