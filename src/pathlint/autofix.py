@@ -198,7 +198,13 @@ class _PathFixer(OSPathDetector):
         for statement in node.body:
             self.visit(statement)
         successful = scope.copy()
-        self.merge_bindings([before, successful])
+        names = _ScopeNames()
+        for statement in (*node.body, *node.handlers, *node.orelse):
+            names.visit(statement)
+        uncertain = before.copy()
+        uncertain.update(dict.fromkeys(names.names))
+        # Exceptions can interrupt any binding before a later import restores it.
+        self.merge_bindings([before, successful, uncertain])
         interrupted = scope.copy()
         alternatives = []
         for handler in node.handlers:

@@ -439,6 +439,17 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
         "os = custom\nfor item in []:\n    import os\n",
         "os = custom\nwhile False:\n    import os\n",
         "os = custom\ntry:\n    pass\nexcept Exception:\n    import os\nfinally:\n    result = os.path.exists('missing')\n",
+        "import os\ntry:\n    os = custom\n    raise ValueError()\n    import os\n"
+        "except ValueError:\n    result = os.path.exists('missing')\n",
+        "import os\ntry:\n    try:\n        raise ValueError()\n"
+        "    except ValueError:\n        os = custom\n        raise TypeError()\n        import os\n"
+        "    finally:\n        result = os.path.exists('missing')\n"
+        "except TypeError:\n    pass\n",
+        "import os\ntry:\n    try:\n        pass\n"
+        "    except ValueError:\n        pass\n"
+        "    else:\n        os = custom\n        raise TypeError()\n        import os\n"
+        "    finally:\n        result = os.path.exists('missing')\n"
+        "except TypeError:\n    pass\n",
         "import os\n[(os := custom) for item in [0]]\n",
         "import os\n{(os := custom).path.exists('missing') for item in [0]}\n",
         "import os\n{item: (os := custom) for item in [0]}\n",
