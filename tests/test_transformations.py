@@ -93,6 +93,12 @@ def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> N
         "os.path.expanduser('')",
         "os.path.expanduser('directory/')",
         "os.path.expanduser('~__pathlint_nonexistent_user__/file')",
+        "os.path.expanduser('./file')",
+        "os.path.join('./file')",
+        "os.path.join('directory', './file')",
+        "os.path.dirname('./directory/file')",
+        r"os.path.expanduser('~\\file')",
+        r"os.path.expanduser('~\\directory\\file')",
         r"os.path.dirname('directory\\file')",
     ],
 )

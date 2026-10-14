@@ -332,6 +332,13 @@ class _PathFixer(OSPathDetector):
             "str" in scope for scope in self.scopes
         ):
             return
+        if function in {"join", "dirname", "expanduser"} and any(
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and arg.value.startswith("./")
+            for arg in node.args
+        ):
+            return
         # These literal spellings have different string results under pathlib.
         if function != "isabs" and any(
             isinstance(arg, ast.Constant)
@@ -357,7 +364,7 @@ class _PathFixer(OSPathDetector):
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value.startswith("~")
             and node.args[0].value != "~"
-            and not node.args[0].value.startswith(("~/", "~\\"))
+            and not node.args[0].value.startswith("~/")
         ):
             # os.path leaves unknown users unchanged; Path.expanduser raises.
             return
