@@ -222,12 +222,12 @@ literals passed to `isabs` whose interpretation can differ under Windows path ru
 Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes are assigned or deleted are also left
 unchanged. Calls outside annotation expressions remain eligible for fixes.
-Fixes retain imports when annotations or `__all__` may reference them, and avoid
-constructors affected by Pathlib mutations. Sources containing wildcard imports
-are left unchanged because their exports can overwrite names used by a fix.
-Sources using type parameters or
-type aliases are also left unchanged because their annotation scopes and lazy
-values are not analyzed by the fixer. `abspath`, `splitext`, `sep`, and
+Fixes retain imports when annotations, `__all__`, or namespace inspection may
+reference them, and avoid constructors affected by Pathlib mutations. Sources
+containing wildcard imports are left unchanged because their exports can overwrite
+names used by a fix. Sources using type parameters or type aliases are also left
+unchanged because their annotation scopes and lazy values are not analyzed by the
+fixer. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
 or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
 unchanged: on supported Python versions, their Pathlib replacements can raise

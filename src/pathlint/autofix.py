@@ -585,6 +585,26 @@ def _clean_imports(content: str) -> tuple[str, int]:
     ):
         # Annotation aliases can resolve to strings that need imports after loading.
         return content, 0
+    namespace_names = {"globals", "locals", "vars", "__builtins__"} | {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "builtins" and not node.level
+        for alias in node.names
+        if alias.name in {"globals", "locals", "vars", "__dict__"}
+    }
+    namespace_names.update(
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "builtins"
+    )
+    if any(
+        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in namespace_names
+        for node in ast.walk(tree)
+    ):
+        # Namespace inspectors and exposed builtins can reveal arbitrary imported bindings.
+        return content, 0
     # A later del still needs its imported binding after calls are rewritten.
     referenced = {
         node.id

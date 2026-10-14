@@ -872,6 +872,86 @@ def test_import_cleanup_preserves_class_attributes(body: str, lookup: str) -> No
     assert run(updated) == run(source)
 
 
+@pytest.mark.parametrize("namespace", ["globals", "locals", "vars"])
+@pytest.mark.parametrize("key", ["'osp'", "''.join(['o', 's', 'p'])"])
+@pytest.mark.parametrize("rewrite_call", [False, True])
+@pytest.mark.parametrize(
+    ("imports", "accessor"),
+    [
+        ("", "{namespace}()"),
+        ("import builtins\n", "builtins.{namespace}()"),
+        ("import builtins as python_builtins\n", "python_builtins.{namespace}()"),
+        ("from builtins import {namespace} as inspect_namespace\n", "inspect_namespace()"),
+        ("inspect_namespace = {namespace}\n", "inspect_namespace()"),
+        (
+            "import builtins as python_builtins\ninspect_namespace = python_builtins.{namespace}\n",
+            "inspect_namespace()",
+        ),
+        (
+            "from builtins import {namespace} as original_namespace\n"
+            "inspect_namespace = original_namespace\n",
+            "inspect_namespace()",
+        ),
+        ("", "{namespace}(*[])"),
+        ("", "{namespace}(**{})"),
+        ("", "{namespace}(*[], **{})"),
+        ("import builtins as python_builtins\n", "python_builtins.{namespace}(*())"),
+        ("from builtins import {namespace} as inspect_namespace\n", "inspect_namespace(**{})"),
+        ("import builtins\nnamespace_module = builtins\n", "namespace_module.{namespace}()"),
+        ("import builtins\n", "getattr(builtins, '{namespace}')()"),
+        ("import builtins\n", "builtins.__dict__['{namespace}']()"),
+        ("", "__builtins__['{namespace}']()"),
+        ("import builtins\n", "vars(builtins)['{namespace}']()"),
+        (
+            "from builtins import __dict__ as builtin_namespace\n",
+            "builtin_namespace['{namespace}']()",
+        ),
+    ],
+)
+def test_import_cleanup_preserves_namespace_lookups(
+    namespace: str, key: str, rewrite_call: bool, imports: str, accessor: str
+) -> None:
+    body = f"result = {accessor.replace('{namespace}', namespace)}[{key}].basename('a/b')\n"
+    if rewrite_call:
+        body += "filename = osp.basename('directory/file')\n"
+    if namespace == "globals":
+        source = "import os.path as osp\n" + body
+    else:
+        source = (
+            "def check():\n"
+            + indent("import os.path as osp\n" + body + "return result\n", "    ")
+            + "result = check()\n"
+        )
+    source = imports.format(namespace=namespace) + source
+    updated, count = fix_content(source)
+    assert count == int(rewrite_call)
+    assert "import os.path as osp" in updated
+    assert run(updated) == run(source) == "b"
+    assert fix_content(updated) == (updated, 0)
+
+
+@pytest.mark.parametrize(
+    ("imports", "accessor"),
+    [
+        ("", "vars"),
+        ("import builtins\n", "builtins.vars"),
+        ("import builtins as python_builtins\n", "python_builtins.vars"),
+        ("from builtins import vars as inspect_namespace\n", "inspect_namespace"),
+    ],
+)
+def test_import_cleanup_preserves_imports_with_object_vars(imports: str, accessor: str) -> None:
+    source = (
+        imports + "import os.path as osp\n"
+        "from types import SimpleNamespace\n"
+        "value = SimpleNamespace(filename=osp.basename('directory/file'))\n"
+        f"result = {accessor}(value)['filename']\n"
+    )
+    updated, count = fix_content(source)
+    assert count == 1
+    assert "import os.path as osp" in updated
+    assert run(updated) == run(source) == "file"
+
+
 @pytest.mark.parametrize(
     "declaration",
     [
