@@ -577,6 +577,67 @@ def add_pathlib_import(content: str) -> str:
     return _insert_import(content)
 
 
+def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
+    """Find references exposing runtime namespaces or dynamic code execution.
+
+    :param ast.AST tree: Parsed source to inspect, including nested scopes.
+    :param bool include_dir: Include read-only name listings for import retention.
+    :return bool: Whether a known namespace capability is referenced.
+    """
+    builtins = {
+        "globals",
+        "locals",
+        "vars",
+        "eval",
+        "exec",
+        "__dict__",
+        "__import__",
+        "getattr",
+        "setattr",
+        "delattr",
+    }
+    if include_dir:
+        builtins.add("dir")
+    namespace_names = (
+        builtins
+        | {"__builtins__"}
+        | {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "builtins" and not node.level
+            for alias in node.names
+            if alias.name in builtins
+        }
+    )
+    namespace_names.update(
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "builtins"
+    )
+    namespace_attributes = builtins | {
+        "__globals__",
+        "__dict__",
+        "__builtins__",
+        "__getattribute__",
+        "__getattr__",
+        "__closure__",
+        "cell_contents",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+    }
+    return any(
+        isinstance(getattr(node, "ctx", None), ast.Load)
+        and (
+            (isinstance(node, ast.Name) and node.id in namespace_names)
+            or (isinstance(node, ast.Attribute) and node.attr in namespace_attributes)
+        )
+        for node in ast.walk(tree)
+    )
+
+
 def _clean_imports(content: str) -> tuple[str, int]:
     """Remove unused os.path import aliases without discarding import comments.
 
@@ -601,24 +662,7 @@ def _clean_imports(content: str) -> tuple[str, int]:
     ):
         # Annotation aliases can resolve to strings that need imports after loading.
         return content, 0
-    namespace_names = {"globals", "locals", "vars", "dir", "eval", "exec", "__builtins__"} | {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "builtins" and not node.level
-        for alias in node.names
-        if alias.name in {"globals", "locals", "vars", "dir", "eval", "exec", "__dict__"}
-    }
-    namespace_names.update(
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name == "builtins"
-    )
-    if any(
-        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in namespace_names
-        for node in ast.walk(tree)
-    ):
+    if _references_namespace(tree, include_dir=True):
         # Namespace inspectors and dynamic code can access arbitrary imported bindings.
         return content, 0
     # A later del still needs its imported binding after calls are rewritten.
@@ -741,6 +785,9 @@ def fix_content(content: str) -> tuple[str, int]:
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
+    if _references_namespace(tree):
+        # Dynamic writes can overwrite imported aliases and generated constructors.
+        return content, 0
     if any(
         isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
         for node in ast.walk(tree)

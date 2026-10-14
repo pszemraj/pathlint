@@ -596,9 +596,9 @@ def test_import_follows_docstring_and_future_import() -> None:
         "    value = basename('a/b')\nresult = Paths.value\n",
         "from os.path import basename\n@(\n    lambda cls: cls\n)\nclass Paths:\n"
         "    value = basename('a/b')\nresult = Paths.value\n",
-        "from os.path import basename\n@lambda fn: fn\n@(\n    lambda fn: fn\n)\n"
+        "import asyncio\nfrom os.path import basename\n@lambda fn: fn\n@(\n    lambda fn: fn\n)\n"
         "async def check():\n    return basename('a/b')\n"
-        "result = __import__('asyncio').run(check())\n",
+        "result = asyncio.run(check())\n",
     ],
 )
 @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
@@ -1077,7 +1077,7 @@ def test_import_cleanup_preserves_namespace_lookups(
         )
     source = imports.format(namespace=namespace) + source
     updated, count = fix_content(source)
-    assert count == int(rewrite_call)
+    assert (updated, count) == (source, 0)
     assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "b"
     assert fix_content(updated) == (updated, 0)
@@ -1118,7 +1118,8 @@ def test_import_cleanup_preserves_dynamic_namespace_access(
     if rewrite_call:
         source += "filename = osp.basename('directory/file')\n"
     updated, count = fix_content(source)
-    assert count == int(rewrite_call)
+    expected_changes = int(rewrite_call and namespace == "dir" and not imports.startswith("import"))
+    assert count == expected_changes
     assert "import os.path as osp" in updated
     assert run(updated) == run(source) == expected
     assert fix_content(updated) == (updated, 0)
@@ -1141,9 +1142,122 @@ def test_import_cleanup_preserves_imports_with_object_vars(imports: str, accesso
         f"result = {accessor}(value)['filename']\n"
     )
     updated, count = fix_content(source)
-    assert count == 1
+    assert (updated, count) == (source, 0)
     assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "file"
+
+
+@pytest.mark.parametrize(
+    ("capability", "statement", "expression", "expected"),
+    [
+        ("exec", "{accessor}('osp = custom')", "osp.basename('a/b')", "custom"),
+        (
+            "eval",
+            "{accessor}(\"globals().__setitem__('osp', custom)\")",
+            "osp.basename('a/b')",
+            "custom",
+        ),
+        ("globals", "{accessor}()['osp'] = custom", "osp.basename('a/b')", "custom"),
+        ("locals", "{accessor}()['osp'] = custom", "osp.basename('a/b')", "custom"),
+        ("vars", "{accessor}()['osp'] = custom", "osp.basename('a/b')", "custom"),
+        ("exec", "{accessor}('Path = Custom')", "osp.basename('a/b')", "b"),
+        ("exec", "{accessor}('str = repr')", "osp.join('a', 'b')", str(Path("a") / "b")),
+    ],
+)
+@pytest.mark.parametrize(
+    ("imports", "accessor"),
+    [
+        ("", "{capability}"),
+        ("import builtins as python_builtins\n", "python_builtins.{capability}"),
+        ("from builtins import {capability} as mutate_namespace\n", "mutate_namespace"),
+        ("mutate_namespace = {capability}\n", "mutate_namespace"),
+        ("", "__import__('builtins').{capability}"),
+        ("import_builtins = __import__\n", "import_builtins('builtins').{capability}"),
+        ("import importlib\n", "importlib.import_module('builtins').{capability}"),
+        ("import sys\n", "sys.modules['builtins'].{capability}"),
+        (
+            "from builtins import __dict__ as builtin_namespace\n",
+            "builtin_namespace['{capability}']",
+        ),
+    ],
+)
+def test_dynamic_namespace_writes_leave_source_unchanged(
+    capability: str, statement: str, expression: str, expected: object, imports: str, accessor: str
+) -> None:
+    source = (
+        "import os.path as osp\nfrom types import SimpleNamespace\n"
+        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+        "Custom = lambda value: SimpleNamespace(name='custom')\n"
+        + imports.format(capability=capability)
+        + statement.format(accessor=accessor.format(capability=capability))
+        + f"\nresult = {expression}\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == expected
+
+
+@pytest.mark.parametrize("key", ["osp", "Path", "str"])
+@pytest.mark.parametrize(
+    "accessor",
+    [
+        "anchor.__globals__",
+        "anchor.__getattribute__('__globals__')",
+        "getattr(anchor, '__globals__')",
+        "inspect_attribute(anchor, '__globals__')",
+        pytest.param(
+            "anchor.__builtins__['globals']()",
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 10), reason="Function builtins require 3.10"
+            ),
+        ),
+        "sys._getframe().f_globals",
+        "sys._getframe().f_locals",
+        "sys.modules[anchor.__module__].__dict__",
+    ],
+)
+def test_namespace_attribute_writes_leave_source_unchanged(key: str, accessor: str) -> None:
+    source = (
+        "import os.path as osp\nimport sys\nfrom types import SimpleNamespace\n"
+        "def anchor(): pass\n"
+        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+        "Custom = lambda value: SimpleNamespace(name='custom')\n"
+        + ("inspect_attribute = getattr\n" if accessor.startswith("inspect_attribute") else "")
+        + f"{accessor}[{key!r}] = "
+        + {"osp": "custom", "Path": "Custom", "str": "repr"}[key]
+        + "\nresult = "
+        + ("osp.join('a', 'b')" if key == "str" else "osp.basename('a/b')")
+        + "\n"
+    )
+    # Each fixture gets its own module dictionary, including a module entry for __dict__.
+    module = ModuleType("pathlint_namespace_fixture")
+    previous = sys.modules.get(module.__name__)
+    sys.modules[module.__name__] = module
+    try:
+        updated, count = fix_content(source)
+        assert (updated, count) == (source, 0)
+        exec(compile(updated, "<namespace-write>", "exec"), module.__dict__)
+        assert module.result == (
+            "custom" if key == "osp" else str(Path("a") / "b") if key == "str" else "b"
+        )
+    finally:
+        if previous is None:
+            del sys.modules[module.__name__]
+        else:
+            sys.modules[module.__name__] = previous
+
+
+def test_closure_cell_rebinding_leaves_source_unchanged() -> None:
+    source = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+        "def outer():\n    import os.path as osp\n"
+        "    def check():\n        return osp.basename('a/b')\n    return check\n"
+        "check = outer()\ncheck.__closure__[0].cell_contents = custom\nresult = check()\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == "custom"
 
 
 @pytest.mark.parametrize(
@@ -1185,35 +1299,40 @@ def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: st
 
 @pytest.mark.parametrize("rewrite_call", [False, True])
 @pytest.mark.parametrize(
-    ("definition", "lookup"),
+    ("definition", "lookup", "allow_rewrites"),
     [
-        ("def check(value: 'basename'): pass", "get_type_hints(check)['value'].__name__"),
-        ("def check() -> 'basename': pass", "get_type_hints(check)['return'].__name__"),
+        ("def check(value: 'basename'): pass", "get_type_hints(check)['value'].__name__", True),
+        ("def check() -> 'basename': pass", "get_type_hints(check)['return'].__name__", True),
         (
             "class Check:\n    value: 'basename'",
             "get_type_hints(Check, globalns=globals())['value'].__name__",
+            False,
         ),
         (
             "def check(value: list['basename']): pass",
             "get_type_hints(check)['value'].__args__[0].__name__",
+            True,
         ),
         (
             "Alias = 'basename'\ndef check(value: Alias): pass",
             "get_type_hints(check)['value'].__name__",
+            True,
         ),
         (
             "def check(value): pass\ncheck.__annotations__ = {'value': 'basename'}",
             "get_type_hints(check)['value'].__name__",
+            True,
         ),
         (
             "import types\n__annotations__ = {'value': 'basename'}\n"
             "module = types.ModuleType('fixture')\nmodule.__dict__.update(globals())",
             "get_type_hints(module)['value'].__name__",
+            False,
         ),
     ],
 )
 def test_import_cleanup_preserves_quoted_annotations(
-    definition: str, lookup: str, rewrite_call: bool
+    definition: str, lookup: str, allow_rewrites: bool, rewrite_call: bool
 ) -> None:
     source = (
         "from os.path import basename\nfrom typing import get_type_hints\n"
@@ -1222,7 +1341,7 @@ def test_import_cleanup_preserves_quoted_annotations(
         + ("filename = basename('directory/file')\n" if rewrite_call else "")
     )
     updated, count = fix_content(source)
-    assert count == int(rewrite_call)
+    assert count == int(rewrite_call and allow_rewrites)
     assert "from os.path import basename" in updated
     assert run(updated) == run(source) == "basename"
 
