@@ -124,7 +124,7 @@ class TestFixFileComplex:
         )
 
         count = fix_file(test_file, dry_run=False)
-        assert count >= 4
+        assert count == 3
 
         result = test_file.read_text()
         assert "from pathlib import Path" in result
@@ -427,11 +427,12 @@ class TestReplacementOrder:
     def test_import_replacement_comprehensive(self, tmp_path: Path) -> None:
         """Test all import replacement patterns."""
         test_file = tmp_path / "imports.py"
-        test_file.write_text("from os.path import join, exists, dirname\n")
+        original = "from os.path import join, exists, dirname\n"
+        test_file.write_text(original)
 
         count = fix_file(test_file, dry_run=False)
-        assert count >= 1
+        assert count == 0
 
         result = test_file.read_text()
-        assert "os.path" not in result
+        assert result == original
         assert "from pathlib import Path" not in result  # No unused replacement import.

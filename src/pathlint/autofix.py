@@ -635,15 +635,23 @@ def _clean_imports(content: str) -> tuple[str, int]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
     }
+    # Module imports are externally accessible even without explicit __all__.
+    module_names = _ScopeNames()
+    for statement in tree.body:
+        module_names.visit(statement)
+    referenced.update(module_names.imports)
     # Augmented assignment reads its target even though the AST marks it as Store.
     referenced.update(
         node.target.id
         for node in ast.walk(tree)
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
     )
-    # Removing an enclosing import can make nonlocal declarations uncompilable.
+    # Global imports publish module bindings; nonlocal imports require their owner.
     referenced.update(
-        name for node in ast.walk(tree) if isinstance(node, ast.Nonlocal) for name in node.names
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Global, ast.Nonlocal))
+        for name in node.names
     )
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -658,10 +666,6 @@ def _clean_imports(content: str) -> tuple[str, int]:
         and node.value.id == "os"
         and node.attr == "path"
         for node in ast.walk(tree)
-    )
-    first_non_import = next(
-        (node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))),
-        None,
     )
     count = 0
     for node in ast.walk(tree):
@@ -696,13 +700,6 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 remaining.append(alias)
         if remaining == node.names:
             continue
-        preserve_statement = (
-            not remaining
-            and node is tree.body[0]
-            and isinstance(first_non_import, ast.Expr)
-            and isinstance(first_non_import.value, ast.Constant)
-            and isinstance(first_non_import.value.value, str)
-        )
         start, end = source.span(node)
         # Keep comments inside multiline import statements in their original positions.
         if "#" in content[start:end]:
@@ -737,8 +734,8 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 else:
                     # An empty suite still needs a statement.
                     replacement = "pass"
-            # Keep suites valid and ordinary strings from becoming module docstrings.
-            if (node.col_offset or preserve_statement) and replacement == "":
+            # Keep local suites valid and ordinary strings from becoming docstrings.
+            if node.col_offset and replacement == "":
                 replacement = "pass"
                 start, end = source.span(node)
         source.replace(start, end, replacement)

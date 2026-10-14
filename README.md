@@ -256,7 +256,10 @@ function/frame namespaces, and module registries (`sys.modules` or
 `importlib.import_module`); these capabilities can overwrite aliases or generated
 constructors. Exposed function defaults, keyword defaults, and annotation dictionaries
 also prevent fixes. Bare `dir()` use retains imports while supported calls remain eligible.
-Fixes also retain imports referenced by annotations or `__all__`, and avoid
+Fixes retain module-level imports for re-exports, including conditional imports
+and bindings declared `global`. Imports referenced by annotations or `__all__`
+also remain. Retained imports can still appear in check results. Unused local
+imports can still be removed. Fixes avoid
 constructors affected by Pathlib mutations. Sources containing wildcard imports
 are left unchanged because
 their exports can overwrite names used by a fix. Sources using type parameters

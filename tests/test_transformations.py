@@ -53,7 +53,12 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
     assert run(updated) == run(original)
     detector = OSPathDetector(updated.splitlines())
     detector.visit(ast.parse(updated))
-    assert not detector.offenses
+    import_lines = {
+        node.lineno
+        for node in ast.walk(ast.parse(updated))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
+    assert set(detector.offenses) <= import_lines
     assert fix_content(updated) == (updated, 0)
 
 
@@ -232,8 +237,8 @@ def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
         f"isdir({str(tmp_path)!r}), basename('directory/file'))\n"
     )
     updated, count = fix_content(original)
-    assert count == 2
-    assert "from os.path import exists, isfile, isdir\n" in updated
+    assert count == 1
+    assert "from os.path import exists, isfile, isdir, basename\n" in updated
     assert "Path('directory/file').name" in updated
     assert run(updated) == run(original) == (True, True, True, "file")
     assert fix_content(updated) == (updated, 0)
@@ -874,7 +879,7 @@ def test_unicode_offsets_and_multiline_comments(
     assert f'"""Module {separator} documentation."""' in updated
     assert f"label = '🐍{separator}';" in updated
     assert "# keep this comment" in updated
-    assert updated.count(newline) == original.count(newline)
+    assert updated.count(newline) == original.count(newline) + 1
     assert "\n" not in updated.replace(newline, "")
     assert run(updated) == run(original)
     target = tmp_path / "unicode.py"
@@ -1010,8 +1015,8 @@ def test_partial_named_import_keeps_unsupported_function() -> None:
         "result = (present('directory/file'), splitext('dir/file.ext'))\n"
     )
     updated, count = fix_content(original)
-    assert count == 2
-    assert "from os.path import splitext" in updated
+    assert count == 1
+    assert "from os.path import isabs as present, splitext" in updated
     assert run(updated) == run(original)
 
 
@@ -1333,36 +1338,32 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
 
 @pytest.mark.parametrize("migrate_call", [False, True])
 @pytest.mark.parametrize(
-    ("header", "expected_doc", "keeps_statement"),
+    ("header", "expected_doc"),
     [
-        ("from os.path import basename\n'ordinary string'\n", None, True),
+        ("from os.path import basename\n'ordinary string'\n", None),
         (
             "from os.path import basename\nfrom os.path import dirname\n'ordinary string'\n",
             None,
-            True,
         ),
-        ("from os.path import basename; 'ordinary string'\n", None, True),
+        ("from os.path import basename; 'ordinary string'\n", None),
         (
             "'module documentation'\nfrom os.path import basename\n'ordinary string'\n",
             "module documentation",
-            False,
         ),
         (
             "'module documentation'; from os.path import basename; 'ordinary string'\n",
             "module documentation",
-            True,
         ),
-        ("marker = True\nfrom os.path import basename\n'ordinary string'\n", None, False),
+        ("marker = True\nfrom os.path import basename\n'ordinary string'\n", None),
     ],
 )
 def test_import_cleanup_preserves_module_docstring(
-    header: str, expected_doc: Optional[str], keeps_statement: bool, migrate_call: bool
+    header: str, expected_doc: Optional[str], migrate_call: bool
 ) -> None:
     source = header + ("filename = basename('directory/file')\n" if migrate_call else "")
     source += "result = __doc__\n"
     updated, count = fix_content(source)
-    assert "from os.path import basename" not in updated
-    assert ("pass" in updated) is keeps_statement
+    assert "from os.path import basename" in updated
     if migrate_call:
         assert count > 0
         assert "filename = Path(" in updated
@@ -1417,7 +1418,7 @@ def test_import_cleanup_preserves_augmented_assignment_reads(
     source = prefix + (indent(body, "    ") if prefix else body) + suffix
     updated, count = fix_content(source)
     assert count > 0
-    assert f"from os.path import sep{alias}" in updated
+    assert f"sep{alias}" in updated
     assert run(updated) == run(source)
     assert fix_content(updated) == (updated, 0)
 
@@ -1705,19 +1706,51 @@ def test_closure_cell_rebinding_leaves_source_unchanged() -> None:
 
 
 @pytest.mark.parametrize(
-    "declaration",
+    ("imports", "call", "export", "declaration", "changes"),
     [
-        '__all__ = ["basename"]',
-        '__all__ = list(("basename",))',
-        "from export_names import __all__",
-        "from export_names import exported as __all__\n__all__.append('basename')",
+        *[
+            ("from os.path import basename", "basename", "basename", declaration, True)
+            for declaration in [
+                "",
+                '__all__ = ["basename"]',
+                '__all__ = list(("basename",))',
+                "from export_names import __all__",
+                "from export_names import exported as __all__\n__all__.append('basename')",
+            ]
+        ],
+        ("import os.path as paths", "paths.basename", "paths", "", True),
+        ("from os import path as paths", "paths.basename", "paths", "", True),
+        ("import os.path", "os.path.basename", "os", "", True),
+        (
+            "if True:\n    from os.path import basename\n    value = basename('a/b')",
+            "basename",
+            "basename",
+            "",
+            True,
+        ),
+        (
+            "try:\n    from os.path import basename\n    value = basename('a/b')\n"
+            "except ImportError:\n    pass",
+            "basename",
+            "basename",
+            "",
+            True,
+        ),
+        (
+            "def load():\n    global basename\n    from os.path import basename\nload()",
+            "basename",
+            "basename",
+            "",
+            False,
+        ),
     ],
 )
-def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: str) -> None:
-    source = f"from os.path import basename\n{declaration}\nresult = basename('directory/file')\n"
+def test_import_cleanup_preserves_public_exports(
+    tmp_path: Path, imports: str, call: str, export: str, declaration: str, changes: bool
+) -> None:
+    source = f"{imports}\n{declaration}\nresult = {call}('directory/file')\n"
     updated, count = fix_content(source)
-    assert count > 0
-    assert "from os.path import basename" in updated
+    assert bool(count) is changes
     (tmp_path / "export_names.py").write_text(
         "__all__ = ['basename']\nexported = []\n", encoding="utf-8"
     )
@@ -1729,7 +1762,9 @@ def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: st
                 "-B",
                 "-c",
                 "import sys; sys.path.insert(0, sys.argv[1]); "
-                "from fixture import *; print(basename('directory/file'))",
+                f"from fixture import {export}; "
+                f"assert {call}('directory/file') == 'file'; "
+                f"from fixture import *; print({call}('directory/file'))",
                 str(tmp_path),
             ],
             capture_output=True,
@@ -2326,7 +2361,7 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "import os\nos.path = SimpleNamespace(basename=lambda value: 'custom')\n"
             "result = os.path.basename('directory/file')\n",
             "custom",
-            True,  # The unused osp import is removed; the customized call remains.
+            False,
         ),
         (
             "osp.basename = lambda value: 'custom'\nresult = osp.dirname('directory/file')\n",
@@ -2345,7 +2380,7 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "os.path.basename.__code__ = custom.__code__\n"
             "result = os.path.basename('directory/file')\n",
             "custom",
-            True,  # The unused osp import is removed; the customized call remains.
+            False,
         ),
         (
             "from os.path import basename as present\n"
@@ -2530,7 +2565,7 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "alias.__code__ = custom.__code__\nimport os\n"
             "result = os.path.basename('directory/file')\n",
             "custom",
-            True,  # The unused osp import is removed; the customized call remains.
+            False,
         ),
         (
             "alias = osp\nalias.basename = lambda value: 'custom'\n"
