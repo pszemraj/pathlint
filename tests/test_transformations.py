@@ -1940,6 +1940,68 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             True,
         ),
         (
+            "def custom(value):\n    return 'custom'\n"
+            "osp.basename.__code__ = custom.__code__\n"
+            "result = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "import os\ndef custom(value):\n    return 'custom'\n"
+            "os.path.basename.__code__ = custom.__code__\n"
+            "result = os.path.basename('directory/file')\n",
+            "custom",
+            True,  # The unused osp import is removed; the customized call remains.
+        ),
+        (
+            "from os.path import basename as present\n"
+            "def custom(value):\n    return 'custom'\n"
+            "present.__code__ = custom.__code__\n"
+            "result = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "def custom(value):\n    return 'custom'\n"
+            "osp.basename.__code__: object = custom.__code__\n"
+            "from os.path import basename as present\n"
+            "result = present('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "def custom(value):\n    return 'custom'\n"
+            "def reader():\n    return osp.basename('directory/file')\n"
+            "def writer():\n    osp.basename.__code__ = custom.__code__\n"
+            "writer()\nresult = reader()\n",
+            "custom",
+            False,
+        ),
+        (
+            "def custom(value):\n    return 'custom'\n"
+            "osp.basename.__code__ = custom.__code__\n"
+            "result = osp.dirname('directory/file')\n",
+            "directory",
+            True,
+        ),
+        (
+            "osp.basename.__defaults__ = ('directory/file',)\n"
+            "result = osp.basename('directory/file')\n",
+            "file",
+            False,
+        ),
+        (
+            "del osp.basename.__defaults__\nresult = osp.basename('directory/file')\n",
+            "file",
+            False,
+        ),
+        (
+            "osp.basename.__dict__ = {'label': 'custom'}\n"
+            "result = osp.basename('directory/file')\n",
+            "file",
+            False,
+        ),
+        (
             "if False:\n    osp = object()\n"
             "osp.basename = lambda value: 'custom'\nimport os.path as other\n"
             "result = other.basename('directory/file')\n",
@@ -1977,10 +2039,16 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
     program = (
         "import os, sys\n"
         "original_path = os.path\noriginal_basename = original_path.basename\n"
+        "original_code = original_basename.__code__\n"
+        "original_defaults = original_basename.__defaults__\n"
+        "original_dict = original_basename.__dict__.copy()\n"
         "namespace = {}\ntry:\n"
         "    exec(compile(sys.argv[1], '<fixture>', 'exec'), namespace)\n"
         "    print(namespace['result'])\nfinally:\n"
         "    os.path = original_path\n    original_path.basename = original_basename\n"
+        "    original_basename.__code__ = original_code\n"
+        "    original_basename.__defaults__ = original_defaults\n"
+        "    original_basename.__dict__ = original_dict\n"
     )
     for content in (source, updated):
         result = subprocess.run(

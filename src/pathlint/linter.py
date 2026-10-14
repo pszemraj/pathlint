@@ -208,8 +208,11 @@ class OSPathDetector(ast.NodeVisitor):
         elif isinstance(node, ast.Attribute):
             parent = self.resolve(node.value)
             origin = f"{parent}.{node.attr}" if parent else None
+        # Callable internals affect calls; module parents must retain sibling methods.
         if origin and any(
-            origin == changed or origin.startswith(changed + ".")
+            origin == changed
+            or origin.startswith(changed + ".")
+            or (origin.startswith(("os.path.", "pathlib.")) and changed.startswith(origin + "."))
             for changed in self.mutated_attributes
         ):
             return None

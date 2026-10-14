@@ -827,6 +827,41 @@ def test_replacing_path_module_invalidates_descendants() -> None:
 
 
 @pytest.mark.parametrize(
+    ("import_statement", "target"),
+    [
+        ("import os", "os.path.basename"),
+        ("import os.path as osp", "osp.basename"),
+        ("from os import path as osp", "osp.basename"),
+        ("from os.path import basename as present", "present"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("statement", "attribute"),
+    [
+        ("{target}.__code__ = custom.__code__", "__code__"),
+        ("{target}.__defaults__ = defaults", "__defaults__"),
+        ("{target}.__defaults__ += defaults", "__defaults__"),
+        ("del {target}.__defaults__", "__defaults__"),
+        ("{target}.__dict__ = namespace", "__dict__"),
+    ],
+)
+def test_callable_mutations_invalidate_function_without_invalidating_module(
+    import_statement: str, target: str, statement: str, attribute: str
+) -> None:
+    source = (
+        import_statement + "\n" + statement.format(target=target) + "\n"
+        "import os.path as other\nfrom os.path import basename as named_again\n"
+    )
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {f"os.path.basename.{attribute}"}
+    for expression in (target, "other.basename", "named_again"):
+        assert detector.resolve(ast.parse(expression, mode="eval").body) is None
+    assert detector.resolve(ast.parse("other", mode="eval").body) == "os.path"
+    assert detector.resolve(ast.parse("other.dirname", mode="eval").body) == "os.path.dirname"
+
+
+@pytest.mark.parametrize(
     ("statement", "expected"),
     [
         ("module.Path = custom", "pathlib.Path"),
@@ -849,6 +884,7 @@ def test_pathlib_mutations_invalidate_constructor_origins(statement: str, expect
         is None
     )
     if expected.startswith("pathlib.Path"):
+        assert detector.resolve(ast.parse("constructor", mode="eval").body) is None
         assert detector.resolve(ast.parse("constructor.exists", mode="eval").body) is None
     if expected == "pathlib.Path":
         assert detector.resolve(ast.parse("module.Path", mode="eval").body) is None
