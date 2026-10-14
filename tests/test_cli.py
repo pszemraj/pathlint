@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import subprocess
@@ -14,6 +15,20 @@ import pytest
 from pathlint import cli
 
 OFFENDING = "import os\nvalue = os.path.exists('example')\n"
+
+
+def test_main_module_import_does_not_run_cli(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def forbidden() -> int:
+        pytest.fail("Importing pathlint.__main__ must not run the CLI")
+
+    monkeypatch.setattr(cli, "main", forbidden)
+    try:
+        importlib.import_module("pathlint.__main__")
+    finally:
+        sys.modules.pop("pathlint.__main__", None)
+    assert capsys.readouterr() == ("", "")
 
 
 @pytest.fixture
