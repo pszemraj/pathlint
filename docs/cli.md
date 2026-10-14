@@ -26,7 +26,7 @@ Paths are relative to the working directory when possible, and absolute for
 external files. Text output retains the stream's encoding and escapes characters
 it cannot represent, including when redirected through legacy Windows encodings.
 Each offending source line is reported once, even if it contains several usages.
-`PL001` means “Use pathlib instead of os.path.”
+`PL001` means "Use pathlib instead of os.path."
 
 ```bash
 # Findings only; no summary
@@ -39,6 +39,10 @@ pathlint check . --stats
 pathlint check . --aggressive
 ```
 
+`check --aggressive` adds `WARNING: ARE YOU KIDDING ME? USE PATHLIB!` after the
+summary when violations are found. It changes only the message, not detection
+or the exit code. `--quiet` suppresses the message.
+
 Text-mode errors go to stderr.
 
 ## JSON output
@@ -46,6 +50,37 @@ Text-mode errors go to stderr.
 ```bash
 pathlint check . --output-format json
 pathlint check . --output-format json --stats
+```
+
+For `example.py` containing:
+
+```python
+import os
+
+filename = os.path.join("src", "file.py")
+```
+
+`pathlint check example.py --output-format json` produces:
+
+```json
+{
+  "diagnostics": [
+    {
+      "path": "example.py",
+      "line": 3,
+      "code": "PL001",
+      "message": "Use pathlib instead of os.path",
+      "source": "filename = os.path.join(\"src\", \"file.py\")"
+    }
+  ],
+  "errors": [],
+  "summary": {
+    "files_checked": 1,
+    "files_with_issues": 1,
+    "violations": 1,
+    "errors": 0
+  }
+}
 ```
 
 JSON reports contain `diagnostics`, `errors`, and `summary`. Each diagnostic has
@@ -81,9 +116,9 @@ Diff colors are enabled only on interactive terminals.
 | Command | `0` | `1` | `2` |
 | --- | --- | --- | --- |
 | `check` | Clean or no files selected | Violations found | Input, discovery, read, or parse error |
-| `fix` | Completed | — | Input, discovery, read, parse, or write error |
+| `fix` | Completed | - | Input, discovery, read, parse, or write error |
 | `fix --dry-run` | No edits proposed | Edits proposed | Error |
-| `files` | Listing completed, including empty selection | — | Input or discovery error |
+| `files` | Listing completed, including empty selection | - | Input or discovery error |
 
 Errors take precedence over violations or proposed edits. Other valid files
 are still processed. Ctrl-C exits with status `130`.

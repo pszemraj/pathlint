@@ -19,6 +19,7 @@ an alias:
 | `os.path.join("src", "file.py")` | `str(Path("src", "file.py"))` |
 | `os.path.basename("src/file.py")` | `Path("src/file.py").name` |
 | `os.path.dirname("src/file.py")` | `str(Path("src/file.py").parent)` |
+| `os.path.expanduser("src/file.py")` | `str(Path("src/file.py").expanduser())` |
 
 Fixes use AST locations to change expressions while preserving surrounding
 source text, including comments and strings. Imported aliases, named function
@@ -27,12 +28,14 @@ supported. Pathlib imports follow module docstrings and future imports. Existing
 Pathlib aliases are reused where possible; new constructor imports use a private
 alias to preserve wildcard exports.
 
-Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`
-with string-literal arguments, subject to the restrictions below. In particular,
-all tilde-prefixed `expanduser` arguments remain unchanged, so home-directory
-expansion is not currently migrated. Calls with nonliteral arguments, including
-variables and nested calls, remain unchanged; eligible literal calls inside them
-can be fixed. Values and types are not inferred.
+The fixer rewrites only `isabs`, `join`, `basename`, `dirname`, and `expanduser`,
+with string-literal arguments and the restrictions below. `expanduser` arguments
+with a `~` prefix are left unchanged; home-directory expansion requires manual
+migration.
+
+Calls with nonliteral arguments, including variables and nested calls, remain
+unchanged; eligible literal calls inside them can be fixed. Values and types
+are not inferred.
 
 ## Calls requiring manual migration
 
@@ -43,18 +46,25 @@ can raise filesystem errors where `os.path` returns `False`.
 
 ## Path forms and unchanged calls
 
-Keyword arguments, starred arguments, call targets containing comments, literal
-file descriptors, byte paths, and known inexact literal forms are left unchanged.
-Known inexact forms include empty paths, trailing separators, named-user
-expansion, and rooted literals passed to `isabs` whose interpretation can differ
-under Windows path rules.
+The fixer leaves calls unchanged in these cases:
 
-All tilde-prefixed `expanduser` arguments remain unchanged because home values
-can contain spellings that Pathlib normalizes or fail to resolve.
+- Keyword arguments.
+- Starred arguments, such as `*args`.
+- Comments in the call target expression.
+- Integer file descriptors.
+- Byte paths.
+- Path spellings known to change under Pathlib, including empty paths and
+  trailing separators.
+- Rooted literals passed to `isabs` (interpretation can differ under Windows
+  path rules).
+
+All tilde-prefixed `expanduser` arguments are left unchanged, including named-user
+forms such as `~name/path`. Home-directory lookup can fail, and Pathlib can
+normalize the home-directory spelling.
 
 ### Windows paths
 
-On Windows, string-returning fixes skip literals whose separators or dot
+On Windows, fixes that return strings skip literals whose separators or dot
 components Pathlib would normalize.
 
 ## Bindings and annotations
@@ -65,9 +75,8 @@ when the function, lambda, or generator is created, and conservatively skip
 aliases rebound anywhere in the file, including imports with conflicting origins.
 Stable imports inside the body can still be migrated.
 
-The fixer leaves annotation expressions unchanged: postponed annotations and
+Annotation usages are detected but never fixed. Postponed annotations and
 Python 3.14's lazy annotations can resolve names after their bindings change.
-Calls outside annotation expressions remain eligible for fixes.
 
 Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.

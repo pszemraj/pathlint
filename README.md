@@ -111,16 +111,20 @@ See [detection details](docs/detection.md) for advanced cases.
 
 **Fixing is experimental. Review every diff and run your tests.**
 
-Automatic fixes are limited to selected calls with string-literal arguments:
+Only these five calls support automatic fixes, with string-literal arguments:
 
-| Usage | Auto-fix support |
+| Usage | Pathlib replacement |
 | --- | --- |
-| `join`, `basename`, `dirname`, `isabs` | Selected string literals |
-| `expanduser` | Selected literals without `~` |
+| `join` | `str(Path(...))` |
+| `basename` | `Path(...).name` |
+| `dirname` | `str(Path(...).parent)` |
+| `isabs` | `Path(...).is_absolute()` |
+| `expanduser` (without `~`) | `str(Path(...).expanduser())` |
 | `exists`, `isfile`, `isdir` | Manual migration |
 | `abspath`, `splitext`, `sep`, `pathsep` | Manual migration |
 
-Fixes preserve surrounding comments and strings.
+Fixes preserve surrounding comments and strings. Annotation usages are detected
+but never rewritten.
 
 The fixer is conservative: it rewrites calls only when its static checks allow
 them and leaves uncertain cases unchanged. It does not fix every violation.
@@ -193,4 +197,4 @@ ruff format --check .
 
 ## License
 
-MIT License — see [LICENSE.txt](LICENSE.txt).
+MIT License - see [LICENSE.txt](LICENSE.txt).
