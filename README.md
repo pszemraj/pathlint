@@ -159,7 +159,7 @@ pathlint fix . --dry-run --quiet --no-color
 For scripting, `check` exits `0` when clean and `1` when it finds violations;
 `fix --dry-run` exits `1` when it proposes edits. Errors exit `2`.
 See the [CLI reference](docs/cli.md) for output formats, exit codes, and
-compatibility.
+migration from older commands.
 
 ## Pre-commit
 
