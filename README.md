@@ -25,7 +25,7 @@ pathlint fix . --dry-run
 
 ## Installation
 
-Requires **Python 3.9+**. The runtime uses only the Python standard library.
+Requires **Python 3.9+**. No runtime dependencies.
 
 ```bash
 pip install pathlint
@@ -73,7 +73,7 @@ For a file containing `import os` and the join call, the preview shows:
 pathlint fix .
 ```
 
-After applying fixes, rerun `pathlint check .` to see which uses still need
+After applying fixes, rerun `pathlint check .` to see which uses need
 manual migration.
 
 List the Python files that any of these commands would select:
@@ -103,29 +103,22 @@ callback = os.path.join
 ```
 
 Pathlint resolves imports, aliases, and local shadowing, including usage in
-annotations. Valid `os.PathLike` annotations are not flagged. It uses static
-analysis and may conservatively skip dynamically rebound names; see
-[detection details](docs/detection.md) for advanced cases.
-
-Each offending source line is reported once, even if it contains several uses.
-Use the findings to guide manual migrations too.
+annotations. Valid `os.PathLike` annotations are not flagged. Detection is
+static: dynamic rebinding and wildcard imports may leave uses undetected.
+See [detection details](docs/detection.md) for advanced cases.
 
 ## Auto-fix
 
 **Fixing is experimental. Review every diff and run your tests.**
 
-Supported fixes are currently limited to selected calls with string-literal
-arguments:
+Automatic fixes are limited to selected calls with string-literal arguments:
 
-| Call | Pathlib replacement |
+| Usage | Auto-fix support |
 | --- | --- |
-| `isabs` | `Path(...).is_absolute()` |
-| `join` | `str(Path(...))` |
-| `basename` | `Path(...).name` |
-| `dirname` | `str(Path(...).parent)` |
-
-Literal `expanduser` calls without `~` are also supported; home-directory
-expansion remains a manual migration.
+| `join`, `basename`, `dirname`, `isabs` | Selected string literals |
+| `expanduser` | Selected literals without `~` |
+| `exists`, `isfile`, `isdir` | Manual migration |
+| `abspath`, `splitext`, `sep`, `pathsep` | Manual migration |
 
 Fixes preserve surrounding comments and strings.
 

@@ -10,6 +10,17 @@ pathlint files . -e '*.generated.py' -e 'src/legacy/'
 pathlint fix . --exclude vendor --dry-run
 ```
 
+## Selection precedence
+
+1. Explicit `--exclude` patterns apply to every input, including named files
+   and filenames supplied by pre-commit.
+2. Explicitly named Python files bypass Git and built-in exclusions.
+3. Directory scans apply built-in exclusions and, when Git is available and
+   enabled, select tracked files and untracked files that Git does not ignore.
+
+File symlinks select their resolved Python targets once; exclusions match both
+the link and target paths.
+
 ## Exclusion patterns
 
 Each `-e` / `--exclude` accepts one pattern; repeat the argument for multiple
@@ -45,12 +56,5 @@ own Git rules.
 
 Git is optional. Without Git, directory scans use built-in and explicit
 exclusions; `.gitignore` rules are not interpreted.
-
-## Explicit files and symlinks
-
-Explicitly named files bypass Git and built-in exclusions. **Explicit
-`--exclude` patterns still apply**, including to filenames supplied by
-pre-commit. File symlinks select their resolved Python targets once; exclusions
-match both the link and target paths.
 
 Return to the [README](../README.md).

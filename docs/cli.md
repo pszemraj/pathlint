@@ -90,7 +90,7 @@ are still processed. Ctrl-C exits with status `130`.
 
 ## Compatibility
 
-Existing invocations continue to work without warnings:
+These legacy invocations are accepted without warnings:
 
 ```bash
 pathlint .
@@ -98,8 +98,8 @@ pathlint --fix src/
 pathlint --dry-run src/
 ```
 
-The original `python -m pathlint.linter` and `python -m pathlint.autofix`
-entry points also remain available. Empty selections succeed; dry runs return
-`1` when they propose edits.
+`python -m pathlint.linter` and `python -m pathlint.autofix` are supported
+module entry points. Empty selections succeed; dry runs return `1` when they
+propose edits.
 
 Return to the [README](../README.md).

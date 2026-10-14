@@ -32,8 +32,14 @@ with string-literal arguments, subject to the restrictions below. In particular,
 all tilde-prefixed `expanduser` arguments remain unchanged, so home-directory
 expansion is not currently migrated. Calls with nonliteral arguments, including
 variables and nested calls, remain unchanged; eligible literal calls inside them
-can still be fixed. Values and types are not inferred. Unsupported references
-retain their imports.
+can be fixed. Values and types are not inferred.
+
+## Calls requiring manual migration
+
+`abspath`, `splitext`, `sep`, and `pathsep` require manual migration; the fixer
+does not supply behavior-preserving replacements. `exists`, `isfile`, and `isdir`
+are also left unchanged: on supported Python versions, their Pathlib replacements
+can raise filesystem errors where `os.path` returns `False`.
 
 ## Path forms and unchanged calls
 
@@ -44,14 +50,12 @@ expansion, and rooted literals passed to `isabs` whose interpretation can differ
 under Windows path rules.
 
 All tilde-prefixed `expanduser` arguments remain unchanged because home values
-can contain spellings that Pathlib normalizes or fail to resolve. On Windows,
-string-returning fixes also skip literals whose separators or dot components
-Pathlib would normalize.
+can contain spellings that Pathlib normalizes or fail to resolve.
 
-`abspath`, `splitext`, `sep`, and `pathsep` are not rewritten because their former
-replacements changed behavior or returned incorrect values. `exists`, `isfile`,
-and `isdir` are also left unchanged: on supported Python versions, their Pathlib
-replacements can raise filesystem errors where `os.path` returns `False`.
+### Windows paths
+
+On Windows, string-returning fixes skip literals whose separators or dot
+components Pathlib would normalize.
 
 ## Bindings and annotations
 
@@ -92,13 +96,18 @@ affected by Pathlib mutations.
 ## Dynamic namespaces
 
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
-builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
-`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, their bound
-`__setattr__`/`__delattr__` equivalents, exposed `builtins`, function/frame
-namespaces, and module registries (`sys.modules` or `importlib.import_module`);
-these capabilities can overwrite aliases or generated constructors. Exposed
-function defaults, keyword defaults, and annotation dictionaries also prevent
-fixes. Bare `dir()` use retains imports while supported calls remain eligible.
+builtins are left unchanged. These capabilities can overwrite aliases or
+generated constructors:
+
+- `exec`, `eval`, `globals`, `locals`, `vars`, `__import__`, `getattr`, `setattr`,
+  and `delattr`;
+- their bound `__setattr__`/`__delattr__` equivalents;
+- exposed `builtins` and function/frame namespaces;
+- module registries (`sys.modules` or `importlib.import_module`).
+
+Exposed function defaults, keyword defaults, and annotation dictionaries also
+prevent fixes. Bare `dir()` use retains imports while supported calls remain
+eligible.
 
 Sources containing wildcard imports are left unchanged because their exports
 can overwrite names used by a fix. Sources using type parameters or type aliases
@@ -107,9 +116,9 @@ analyzed by the fixer.
 
 ## Retained imports
 
-Fixes retain module-level imports for re-exports, including conditional imports
-and bindings declared `global`. Imports referenced by annotations or `__all__`
-also remain. Retained imports can still appear in check results. Unused local
-imports can still be removed.
+Imports needed by unsupported references are retained. Fixes retain module-level
+imports for re-exports, including conditional imports and bindings declared
+`global`. Imports referenced by annotations or `__all__` are retained too.
+Retained imports can appear in check results. Unused local imports can be removed.
 
 Return to the [README](../README.md).
