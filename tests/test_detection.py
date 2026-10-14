@@ -21,6 +21,31 @@ def offenses(source: str) -> dict[int, set[str]]:
 
 
 @pytest.mark.parametrize(
+    ("expression", "index", "expected", "changes"),
+    [
+        ("{'first': (os := custom), os.path.exists('missing'): 0}", -1, "custom", False),
+        ("{**((os := custom) and {}), os.path.exists('missing'): 0}", 0, "custom", False),
+        ("{os.path.exists('missing'): 0, 'last': (os := custom)}", 0, False, True),
+    ],
+)
+def test_dictionary_entries_follow_runtime_evaluation_order(
+    expression: str, index: int, expected: object, changes: bool
+) -> None:
+    source = (
+        "import os\nfrom types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        f"mapping = {expression}\nresult = list(mapping)[{index}]\n"
+    )
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    assert bool(offenses(source)) is changes
+    for content in (source, updated):
+        namespace: dict[str, object] = {}
+        exec(compile(content, "<dictionary>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == expected
+
+
+@pytest.mark.parametrize(
     ("source", "expected"),
     [
         ("import os as system\nresult = system.path.exists('file')", {2}),

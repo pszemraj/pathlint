@@ -373,6 +373,13 @@ class OSPathDetector(ast.NodeVisitor):
         self.visit(node.value)
         self.visit(node.target)
 
+    def visit_Dict(self, node: ast.Dict) -> None:
+        """Visit each dictionary key and value in evaluation order."""
+        for key, value in zip(node.keys, node.values):
+            if key is not None:
+                self.visit(key)
+            self.visit(value)
+
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
         """Visit the iterable, bind loop targets, and traverse both loop suites."""
         self.visit(node.iter)
