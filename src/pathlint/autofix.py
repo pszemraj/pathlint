@@ -22,7 +22,14 @@ METHODS = {
 
 
 class _Source:
+    """Track source offsets and replacements without rebuilding the syntax tree."""
+
     def __init__(self, content: str) -> None:
+        """Index the original source and initialize an empty edit collection.
+
+        Args:
+            content: Python source whose original character offsets identify edits.
+        """
         self.content = content
         self.lines = content.splitlines(keepends=True)
         self.starts = [0]
@@ -31,17 +38,43 @@ class _Source:
         self.edits: list[tuple[int, int, str]] = []
 
     def offset(self, line: int, column: int) -> int:
+        """Translate an AST line and UTF-8 byte column into a character offset.
+
+        Args:
+            line: One-based source line number.
+            column: Zero-based UTF-8 byte offset within that line.
+
+        Returns:
+            Character offset into the original source.
+        """
         return self.starts[line - 1] + len(
             self.lines[line - 1].encode("utf-8")[:column].decode("utf-8")
         )
 
     def span(self, node: ast.AST) -> tuple[int, int]:
+        """Locate the original source interval occupied by a positioned AST node.
+
+        Args:
+            node: Syntax node with start and end location attributes.
+
+        Returns:
+            Start and exclusive end character offsets.
+        """
         return (
             self.offset(node.lineno, node.col_offset),
             self.offset(node.end_lineno, node.end_col_offset),
         )
 
     def render(self, start: int, end: int) -> str:
+        """Apply edits contained within an original source interval.
+
+        Args:
+            start: Inclusive character offset in the original source.
+            end: Exclusive character offset in the original source.
+
+        Returns:
+            Source interval with its contained replacements applied.
+        """
         text = self.content[start:end]
         for left, right, replacement in sorted(self.edits, reverse=True):
             if start <= left and right <= end:
@@ -49,12 +82,27 @@ class _Source:
         return text
 
     def replace(self, start: int, end: int, replacement: str) -> None:
+        """Record a replacement, superseding edits contained within its interval.
+
+        Args:
+            start: Inclusive character offset in the original source.
+            end: Exclusive character offset in the original source.
+            replacement: Text to substitute for the interval.
+        """
         self.edits = [edit for edit in self.edits if not (start <= edit[0] and edit[1] <= end)]
         self.edits.append((start, end, replacement))
 
 
 class _PathFixer(OSPathDetector):
+    """Resolve imported calls and collect conservative pathlib source edits."""
+
     def __init__(self, content: str, tree: ast.Module) -> None:
+        """Initialize source edits and choose an unused pathlib constructor alias.
+
+        Args:
+            content: Original Python source to edit.
+            tree: Parsed module used to identify existing names and leading imports.
+        """
         super().__init__(content.splitlines())
         self.source = _Source(content)
         self.count = 0
@@ -99,6 +147,11 @@ class _PathFixer(OSPathDetector):
             self.path_name = "PathlintPath" if self.path_name == "Path" else self.path_name + "_"
 
     def constructor(self) -> str:
+        """Reuse a visible pathlib constructor or request an import for a new alias.
+
+        Returns:
+            Source expression naming the pathlib Path constructor.
+        """
         for index in range(len(self.scopes) - 1, -1, -1):
             scope = self.scopes[index]
             for name in scope:
@@ -115,6 +168,11 @@ class _PathFixer(OSPathDetector):
         return self.path_name
 
     def visit_If(self, node: ast.If) -> None:
+        """Visit both branches independently and merge their resulting bindings.
+
+        Args:
+            node: Conditional statement to inspect for bindings and supported calls.
+        """
         self.visit(node.test)
         scope = self.scopes[-1]
         before = scope.copy()
@@ -129,6 +187,11 @@ class _PathFixer(OSPathDetector):
         self.merge_bindings([body, alternative])
 
     def merge_bindings(self, alternatives: list[dict[str, str | None]]) -> None:
+        """Retain an import origin only when every alternative agrees on it.
+
+        Args:
+            alternatives: Nonempty collection of possible bindings for the current scope.
+        """
         scope = self.scopes[-1]
         merged = {
             name: alternatives[0].get(name)
@@ -140,6 +203,11 @@ class _PathFixer(OSPathDetector):
         scope.update(merged)
 
     def visit_Try(self, node: ast.Try) -> None:
+        """Merge successful and interrupted bindings before visiting the final suite.
+
+        Args:
+            node: Try statement whose suites may establish different import bindings.
+        """
         scope = self.scopes[-1]
         before = scope.copy()
         for statement in node.body:
@@ -167,6 +235,11 @@ class _PathFixer(OSPathDetector):
     visit_TryStar = visit_Try
 
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        """Visit a for loop and account for the possibility of zero iterations.
+
+        Args:
+            node: Synchronous or asynchronous for statement to inspect.
+        """
         before = self.scopes[-1].copy()
         super().visit_For(node)
         self.merge_bindings([before, self.scopes[-1].copy()])
@@ -174,6 +247,11 @@ class _PathFixer(OSPathDetector):
     visit_AsyncFor = visit_For
 
     def visit_While(self, node: ast.While) -> None:
+        """Visit a while loop and merge its bindings with the pre-loop state.
+
+        Args:
+            node: While statement whose body may never execute.
+        """
         self.visit(node.test)
         before = self.scopes[-1].copy()
         for statement in (*node.body, *node.orelse):
@@ -181,6 +259,11 @@ class _PathFixer(OSPathDetector):
         self.merge_bindings([before, self.scopes[-1].copy()])
 
     def visit_Match(self, node: ast.AST) -> None:
+        """Merge each match case with the possibility that no case executes.
+
+        Args:
+            node: Match statement with a subject and case suites.
+        """
         self.visit(node.subject)
         scope = self.scopes[-1]
         before = scope.copy()
@@ -193,6 +276,11 @@ class _PathFixer(OSPathDetector):
         self.merge_bindings(alternatives)
 
     def visit_Call(self, node: ast.Call) -> None:
+        """Rewrite supported imported os.path calls after processing nested calls.
+
+        Args:
+            node: Call expression to inspect for a supported transformation.
+        """
         origin = self.resolve(node.func)
         self.generic_visit(node)
         if not origin or not origin.startswith("os.path."):
@@ -246,6 +334,16 @@ class _PathFixer(OSPathDetector):
 
 
 def _insert_import(content: str, name: str = "Path") -> str:
+    """Insert a Path import after the module header while preserving newline style.
+
+    Args:
+        content: Python source to receive the import.
+        name: Local name to bind, using an alias when it differs from Path.
+
+    Returns:
+        Source with the import before executable statements, retaining any module
+        docstring and future imports.
+    """
     tree = ast.parse(content)
     lines = content.splitlines(keepends=True)
     newline = "\r\n" if "\r\n" in content else "\n"
@@ -304,7 +402,14 @@ def _insert_import(content: str, name: str = "Path") -> str:
 
 
 def add_pathlib_import(content: str) -> str:
-    """Add an import after the module docstring, future imports, and leading imports."""
+    """Add a Path import unless a top-level pathlib or Path import already exists.
+
+    Args:
+        content: Python source to inspect and update.
+
+    Returns:
+        Original source when an import exists, or source with a Path import added.
+    """
     tree = ast.parse(content)
     for node in tree.body:
         if (
@@ -319,6 +424,14 @@ def add_pathlib_import(content: str) -> str:
 
 
 def _clean_imports(content: str) -> tuple[str, int]:
+    """Remove unused os.path import aliases without discarding import comments.
+
+    Args:
+        content: Python source after call transformations.
+
+    Returns:
+        Updated source and the number of import aliases removed or simplified.
+    """
     tree = ast.parse(content)
     source = _Source(content)
     loaded = {
@@ -408,7 +521,14 @@ def _clean_imports(content: str) -> tuple[str, int]:
 
 
 def fix_content(content: str) -> tuple[str, int]:
-    """Return source-preserving edits for supported imported os.path calls."""
+    """Rewrite supported imported os.path calls and update their imports.
+
+    Args:
+        content: Python source to parse and transform.
+
+    Returns:
+        Updated source and the total number of call and import replacements.
+    """
     tree = ast.parse(content)
     fixer = _PathFixer(content, tree)
     fixer.visit(tree)
@@ -420,7 +540,15 @@ def fix_content(content: str) -> tuple[str, int]:
 
 
 def fix_file(filepath: Path, dry_run: bool = False) -> int:
-    """Fix one file, retaining the original replacement-count helper interface."""
+    """Fix one file or print its preview, reporting expected errors to stderr.
+
+    Args:
+        filepath: UTF-8 Python source file to transform.
+        dry_run: Print a unified diff instead of writing changes.
+
+    Returns:
+        Number of proposed replacements, or zero if reading, parsing, or writing fails.
+    """
     try:
         original = filepath.read_text(encoding="utf-8")
         updated, count = fix_content(original)
@@ -444,7 +572,14 @@ def fix_file(filepath: Path, dry_run: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Forward the original autofix module entry point to the fix command."""
+    """Forward the original autofix module entry point to the fix command.
+
+    Args:
+        argv: Command arguments, defaulting to the current process arguments.
+
+    Returns:
+        Exit status returned by the fix command.
+    """
     from pathlint.cli import main as cli_main
 
     return cli_main(["fix", *(sys.argv[1:] if argv is None else argv)])

@@ -15,7 +15,14 @@ DEFAULT_EXCLUDES = frozenset(
 
 
 def display_path(filepath: Path) -> str:
-    """Return a working-directory-relative path when possible."""
+    """Format a path relative to the working directory when possible.
+
+    Args:
+        filepath: File or directory path to display.
+
+    Returns:
+        A POSIX-style relative path, or the supplied path if it is outside cwd.
+    """
     try:
         return filepath.relative_to(Path.cwd()).as_posix()
     except ValueError:
@@ -23,7 +30,19 @@ def display_path(filepath: Path) -> str:
 
 
 def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = False) -> bool:
-    """Match a path and its ancestors against name or path patterns."""
+    """Match a path and its ancestors against case-sensitive fnmatch patterns.
+
+    Slashless patterns match names; path patterns match working-directory-relative
+    or absolute paths. A trailing slash restricts a pattern to directories.
+
+    Args:
+        filepath: Absolute file or directory path to test.
+        patterns: Name or path patterns; directory matches exclude descendants.
+        directory: Treat filepath itself as a directory for trailing-slash patterns.
+
+    Returns:
+        True if any pattern matches the path or one of its ancestor directories.
+    """
     cwd = Path.cwd()
     for candidate in (filepath, *filepath.parents):
         for pattern in patterns:
@@ -51,13 +70,38 @@ def discover_files(
     default_excludes: Collection[str] = DEFAULT_EXCLUDES,
     respect_gitignore: bool = True,
 ) -> tuple[list[Path], list[tuple[Path, str]]]:
-    """Collect sorted, deduplicated files and any discovery errors."""
+    """Collect sorted, deduplicated Python files and any discovery errors.
+
+    Explicit files bypass automatic Git and default exclusions. Explicit patterns
+    apply to every input. Directory scans use Git inside worktrees when enabled
+    and available; otherwise they walk the filesystem, pruning excluded directories.
+
+    Args:
+        paths: Files or directories to select from.
+        exclude_patterns: Explicit name or path exclusions, including for named files.
+        default_excludes: Directory names excluded during automatic discovery.
+        respect_gitignore: Use Git's tracked and nonignored untracked file listing
+            inside worktrees when Git is available.
+
+    Returns:
+        Sorted absolute file paths and pairs of failing paths and error messages.
+    """
     files: set[Path] = set()
     errors: list[tuple[Path, str]] = []
     visited: set[tuple[Path, Path]] = set()
     git = shutil.which("git") if respect_gitignore else None
 
     def excluded(candidate: Path, alias: Path, *, directory: bool = False) -> bool:
+        """Check default directory exclusions and both spellings of explicit patterns.
+
+        Args:
+            candidate: Resolved path being considered for automatic discovery.
+            alias: Input path spelling before resolving symlinks.
+            directory: Whether candidate is a directory.
+
+        Returns:
+            True if default or explicit exclusions reject the candidate.
+        """
         directories = candidate if directory else candidate.parent
         return (
             is_excluded(directories, tuple(default_excludes), directory=True)
@@ -66,7 +110,19 @@ def discover_files(
         )
 
     def walk(root: Path, alias: Path) -> None:
+        """Walk a directory, prune exclusions, and scan nested Git repositories.
+
+        Args:
+            root: Resolved directory to traverse.
+            alias: Directory spelling before resolving symlinks.
+        """
+
         def onerror(error: OSError) -> None:
+            """Collect a filesystem traversal failure in the discovery errors.
+
+            Args:
+                error: Failure supplied by os.walk.
+            """
             errors.append((Path(error.filename or root), str(error)))
 
         for directory, dirs, names in os.walk(root, onerror=onerror):
@@ -87,6 +143,12 @@ def discover_files(
                     files.add(candidate)
 
     def scan(root: Path, alias: Path) -> None:
+        """Select a directory's files through Git or a filesystem walk.
+
+        Args:
+            root: Resolved directory to scan once for each input spelling.
+            alias: Directory spelling before resolving symlinks.
+        """
         if (root, alias) in visited:
             return
         visited.add((root, alias))
