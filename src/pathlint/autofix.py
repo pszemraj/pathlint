@@ -600,15 +600,20 @@ def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
     }
     if include_dir:
         builtins.add("dir")
+    namespace_imports = {
+        "builtins": builtins,
+        "sys": {"modules"},
+        "importlib": {"import_module"},
+    }
     namespace_names = (
         builtins
         | {"__builtins__"}
         | {
             alias.asname or alias.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "builtins" and not node.level
+            if isinstance(node, ast.ImportFrom) and not node.level
             for alias in node.names
-            if alias.name in builtins
+            if alias.name in namespace_imports.get(node.module, ())
         }
     )
     namespace_names.update(
@@ -618,7 +623,7 @@ def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
         for alias in node.names
         if alias.name == "builtins"
     )
-    namespace_attributes = builtins | {
+    namespace_attributes = set().union(*namespace_imports.values()) | {
         "__globals__",
         "__dict__",
         "__builtins__",

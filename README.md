@@ -230,8 +230,9 @@ Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
 builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
-`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, exposed `builtins`, and
-function/frame namespaces; these capabilities can overwrite aliases or generated
+`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, exposed `builtins`,
+function/frame namespaces, and module registries (`sys.modules` or
+`importlib.import_module`); these capabilities can overwrite aliases or generated
 constructors. Bare `dir()` use retains imports while supported calls remain eligible.
 Fixes also retain imports referenced by annotations or `__all__`, and avoid
 constructors affected by Pathlib mutations. Sources containing wildcard imports

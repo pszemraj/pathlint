@@ -1290,6 +1290,53 @@ def test_namespace_attribute_writes_leave_source_unchanged(key: str, accessor: s
             sys.modules[module.__name__] = previous
 
 
+@pytest.mark.parametrize("key", ["osp", "Path", "str"])
+@pytest.mark.parametrize(
+    ("imports", "accessor"),
+    [
+        ("import sys\n", "sys.modules[__name__]"),
+        ("import sys as runtime\n", "runtime.modules[__name__]"),
+        ("from sys import modules\n", "modules[__name__]"),
+        ("from sys import modules as registry\n", "registry[__name__]"),
+        ("import sys\nregistry = sys.modules\n", "registry[__name__]"),
+        ("import importlib\n", "importlib.import_module(__name__)"),
+        ("import importlib as loader\n", "loader.import_module(__name__)"),
+        ("from importlib import import_module as load_module\n", "load_module(__name__)"),
+    ],
+)
+def test_module_registry_writes_leave_source_unchanged(
+    key: str, imports: str, accessor: str
+) -> None:
+    source = (
+        "import os.path as osp\nfrom types import SimpleNamespace\n"
+        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+        "Custom = lambda value: SimpleNamespace(name='custom')\n"
+        + imports
+        + f"{accessor}.{key} = "
+        + {"osp": "custom", "Path": "Custom", "str": "repr"}[key]
+        + "\nresult = "
+        + ("osp.join('a', 'b')" if key == "str" else "osp.basename('a/b')")
+        + "\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    name = "pathlint_module_registry_fixture"
+    previous = sys.modules.get(name)
+    try:
+        for content in (source, updated):
+            module = ModuleType(name)
+            sys.modules[name] = module
+            exec(compile(content, "<module-registry>", "exec"), module.__dict__)
+            assert module.result == (
+                "custom" if key == "osp" else str(Path("a") / "b") if key == "str" else "b"
+            )
+    finally:
+        if previous is None:
+            del sys.modules[name]
+        else:
+            sys.modules[name] = previous
+
+
 def test_closure_cell_rebinding_leaves_source_unchanged() -> None:
     source = (
         "from types import SimpleNamespace\n"
