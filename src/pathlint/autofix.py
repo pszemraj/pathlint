@@ -9,8 +9,9 @@ import tokenize
 from io import StringIO
 from pathlib import PureWindowsPath
 
-from pathlint._source import physical_lines
+from pathlint._source import _Source, is_docstring
 from pathlint.bindings import _ScopeNames, declaration_name
+from pathlint.edits import _clean_imports, _insert_import, _references_namespace
 from pathlint.linter import OSPathDetector
 from pathlint.mutations import MutationCollector
 
@@ -23,77 +24,18 @@ REPLACEMENTS = {
 }
 
 
-class _Source:
-    """Track source offsets and replacements without rebuilding the syntax tree."""
-
-    def __init__(self, content: str) -> None:
-        """Index the original source and initialize an empty edit collection.
-
-        :param str content: Python source whose original character offsets identify edits.
-        """
-        self.content = content
-        self.lines = physical_lines(content)
-        self.starts = [0]
-        for line in self.lines:
-            self.starts.append(self.starts[-1] + len(line))
-        self.edits: list[tuple[int, int, str]] = []
-
-    def offset(self, line: int, column: int) -> int:
-        """Translate an AST line and UTF-8 byte column into a character offset.
-
-        :param int line: One-based source line number.
-        :param int column: Zero-based UTF-8 byte offset within that line.
-        :return int: Character offset into the original source.
-        """
-        return self.starts[line - 1] + len(
-            self.lines[line - 1].encode("utf-8")[:column].decode("utf-8")
-        )
-
-    def span(self, node: ast.AST) -> tuple[int, int]:
-        """Locate the original source interval occupied by a positioned AST node.
-
-        :param ast.AST node: Syntax node with start and end location attributes.
-        :return tuple[int, int]: Start and exclusive end character offsets.
-        """
-        return (
-            self.offset(node.lineno, node.col_offset),
-            self.offset(node.end_lineno, node.end_col_offset),
-        )
-
-    def render(self, start: int, end: int) -> str:
-        """Apply edits contained within an original source interval.
-
-        :param int start: Inclusive character offset in the original source.
-        :param int end: Exclusive character offset in the original source.
-        :return str: Source interval with its contained replacements applied.
-        """
-        chunks: list[str] = []
-        cursor = start
-        for left, right, replacement in sorted(self.edits):
-            if start <= left and right <= end:
-                chunks.extend((self.content[cursor:left], replacement))
-                cursor = right
-        chunks.append(self.content[cursor:end])
-        return "".join(chunks)
-
-    def replace(self, start: int, end: int, replacement: str) -> None:
-        """Record a replacement, superseding edits contained within its interval.
-
-        :param int start: Inclusive character offset in the original source.
-        :param int end: Exclusive character offset in the original source.
-        :param str replacement: Text to substitute for the interval.
-        """
-        self.edits = [edit for edit in self.edits if not (start <= edit[0] and edit[1] <= end)]
-        self.edits.append((start, end, replacement))
-
-
 class _PathFixer(OSPathDetector):
     """Resolve imported calls and collect conservative pathlib source edits."""
 
     _use_literal_conditions = False
 
     def __init__(
-        self, content: str, tree: ast.Module, mutations: MutationCollector, platform: str
+        self,
+        content: str,
+        tree: ast.Module,
+        mutations: MutationCollector,
+        platform: str,
+        nodes: tuple[ast.AST, ...],
     ) -> None:
         """Initialize source edits and choose an unused pathlib constructor alias.
 
@@ -101,6 +43,7 @@ class _PathFixer(OSPathDetector):
         :param ast.Module tree: Parsed module used to identify names and leading imports.
         :param MutationCollector mutations: Collected import origins, escapes, and writes.
         :param str platform: Target platform used to check path spelling equivalence.
+        :param tuple[ast.AST, ...] nodes: Cached nodes used to collect whole-module facts.
         """
         super().__init__(mutations)
         self.mutated_attributes.update(self.escaped_origins)
@@ -126,7 +69,7 @@ class _PathFixer(OSPathDetector):
         # runs, including through nested functions or class suites.
         self.global_rebindings: set[str] = set()
         names: set[str] = set()
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Name):
                 names.add(node.id)
                 if isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -155,12 +98,7 @@ class _PathFixer(OSPathDetector):
                     )
         self.leading_aliases: set[str] = set()
         for index, node in enumerate(tree.body):
-            if (
-                index == 0
-                and isinstance(node, ast.Expr)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-            ):
+            if index == 0 and is_docstring(node):
                 continue
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 break
@@ -404,282 +342,6 @@ class _PathFixer(OSPathDetector):
         self.count += 1
 
 
-def _insert_import(content: str, name: str) -> str:
-    """Insert a Path import after the module header while preserving newline style.
-
-    :param str content: Python source to receive the import.
-    :param str name: Private local alias for the inserted constructor.
-    :return str: Source with the import before executable statements and after headers.
-    """
-    tree = ast.parse(content)
-    lines = physical_lines(content)
-    newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
-    insertion = tree.body[0].lineno - 1 if tree.body else len(lines)
-    if tree.body and getattr(tree.body[0], "decorator_list", []):
-        # Decorator expressions can start below their opening @(... line.
-        insertion = next(index for index, line in enumerate(lines) if line.lstrip().startswith("@"))
-    for index, node in enumerate(tree.body):
-        if (
-            index == 0
-            and isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ) or isinstance(node, (ast.Import, ast.ImportFrom)):
-            insertion = node.end_lineno
-        else:
-            if node.lineno <= insertion:
-                # A leading import shares its physical line with executable code.
-                # Insert before ordinary imports, but after docstrings/future imports.
-                header = None
-                for header_index, candidate in enumerate(tree.body):
-                    if (
-                        header_index == 0
-                        and isinstance(candidate, ast.Expr)
-                        and isinstance(candidate.value, ast.Constant)
-                        and isinstance(candidate.value.value, str)
-                    ) or (
-                        isinstance(candidate, ast.ImportFrom) and candidate.module == "__future__"
-                    ):
-                        header = candidate
-                    else:
-                        break
-                source = _Source(content)
-                if header is None:
-                    offset = source.starts[tree.body[0].lineno - 1]
-                else:
-                    _, offset = source.span(header)
-                    rest = content[offset:]
-                    if rest.lstrip(" \t").startswith(";"):
-                        offset += len(rest) - len(rest.lstrip(" \t")) + 1
-                        while offset < len(content) and content[offset] in " \t":
-                            offset += 1
-                    else:
-                        offset = source.starts[header.end_lineno]
-                prefix = content[:offset].rstrip("; \t")
-                if prefix and not prefix.endswith(("\r", "\n")):
-                    prefix += newline
-                statement = f"from pathlib import Path as {name}"
-                return prefix + statement + newline + content[offset:]
-            break
-    statement = f"from pathlib import Path as {name}"
-    prefix = "".join(lines[:insertion])
-    if prefix and not prefix.endswith(("\r", "\n")):
-        prefix += newline
-    return prefix + statement + newline + "".join(lines[insertion:])
-
-
-def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
-    """Find references exposing runtime namespaces or dynamic code execution.
-
-    :param ast.AST tree: Parsed source to inspect, including nested scopes.
-    :param bool include_dir: Include read-only name listings for import retention.
-    :return bool: Whether a known namespace capability is referenced.
-    """
-    builtins = {
-        "globals",
-        "locals",
-        "vars",
-        "eval",
-        "exec",
-        "__dict__",
-        "__import__",
-        "getattr",
-        "setattr",
-        "delattr",
-    }
-    if include_dir:
-        builtins.add("dir")
-    attribute_mutators = {"__setattr__", "__delattr__"}
-    namespace_imports = {
-        "builtins": builtins,
-        "sys": {"modules"},
-        "importlib": {"import_module"},
-    }
-    namespace_names = (
-        builtins
-        | {"__builtins__", "__annotations__"}
-        | {
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-            if alias.name in attribute_mutators
-            or (not node.level and alias.name in namespace_imports.get(node.module, ()))
-        }
-    )
-    namespace_names.update(
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name == "builtins"
-    )
-    namespace_attributes = attribute_mutators.union(*namespace_imports.values()) | {
-        "__globals__",
-        "__dict__",
-        "__builtins__",
-        "__getattribute__",
-        "__getattr__",
-        "__closure__",
-        "__defaults__",
-        "__kwdefaults__",
-        "__annotations__",
-        "cell_contents",
-        "f_globals",
-        "f_locals",
-        "f_builtins",
-    }
-    return any(
-        isinstance(getattr(node, "ctx", None), ast.Load)
-        and (
-            (isinstance(node, ast.Name) and node.id in namespace_names)
-            or (isinstance(node, ast.Attribute) and node.attr in namespace_attributes)
-        )
-        for node in ast.walk(tree)
-    )
-
-
-def _clean_imports(content: str) -> tuple[str, int]:
-    """Remove unused os.path import aliases without discarding import comments.
-
-    :param str content: Python source after call transformations.
-    :return tuple[str, int]: Updated source and the count of aliases removed or simplified.
-    """
-    tree = ast.parse(content)
-    source = _Source(content)
-    if any(
-        (isinstance(node, ast.Name) and node.id == "__all__")
-        or (isinstance(node, ast.alias) and (node.asname or node.name) == "__all__")
-        for node in ast.walk(tree)
-    ):
-        # Explicit exports can refer to imports by string, including imported lists.
-        return content, 0
-    if any(
-        getattr(node, "annotation", None) is not None
-        or getattr(node, "returns", None) is not None
-        or (isinstance(node, ast.Name) and node.id == "__annotations__")
-        or (isinstance(node, ast.Attribute) and node.attr == "__annotations__")
-        for node in ast.walk(tree)
-    ):
-        # Annotation aliases can resolve to strings that need imports after loading.
-        return content, 0
-    if _references_namespace(tree, include_dir=True):
-        # Namespace inspectors and dynamic code can access arbitrary imported bindings.
-        return content, 0
-    # A later del still needs its imported binding after calls are rewritten.
-    referenced = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
-    }
-    # Module imports are externally accessible even without explicit __all__.
-    module_names = _ScopeNames()
-    for statement in tree.body:
-        module_names.visit(statement)
-    referenced.update(module_names.imports)
-    # Augmented assignment reads its target even though the AST marks it as Store.
-    referenced.update(
-        node.target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
-    )
-    # Global imports publish module bindings; nonlocal imports require their owner.
-    referenced.update(
-        name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Global, ast.Nonlocal))
-        for name in node.names
-    )
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            # Class imports expose attributes even without a bare-name use.
-            bindings = _ScopeNames()
-            for statement in node.body:
-                bindings.visit(statement)
-            referenced.update(bindings.names)
-    os_path_used = any(
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-        and node.attr == "path"
-        for node in ast.walk(tree)
-    )
-    count = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Import, ast.ImportFrom)):
-            continue
-        node_count = 0
-        remaining = []
-        for alias in node.names:
-            name = alias.asname or (
-                alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name
-            )
-            if isinstance(node, ast.Import):
-                if (
-                    alias.name == "os.path"
-                    and not alias.asname
-                    and name in referenced
-                    and not os_path_used
-                ):
-                    remaining.append(ast.alias(name="os", asname=None))
-                    node_count += 1
-                    continue
-                removable = alias.name == "os.path"
-            else:
-                removable = (
-                    alias.name != "*"
-                    and not node.level
-                    and (node.module == "os.path" or (node.module == "os" and alias.name == "path"))
-                )
-            if removable and name not in referenced:
-                node_count += 1
-            else:
-                remaining.append(alias)
-        if remaining == node.names:
-            continue
-        start, end = source.span(node)
-        # Keep comments inside multiline import statements in their original positions.
-        if "#" in content[start:end]:
-            continue
-        if remaining:
-            if isinstance(node, ast.Import):
-                replacement = "import "
-            else:
-                replacement = f"from {'.' * node.level}{node.module or ''} import "
-            replacement += ", ".join(
-                alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in remaining
-            )
-        else:
-            replacement = ""
-            line_stop = source.starts[node.end_lineno]
-            line_end = line_stop
-            while line_end > end and content[line_end - 1] in "\r\n":
-                line_end -= 1
-            following = content[end:line_end]
-            if following.lstrip().startswith(";"):
-                end += len(following) - len(following.lstrip()) + 1
-                while end < len(content) and content[end] in " \t":
-                    end += 1
-            else:
-                line_start = source.starts[node.lineno - 1]
-                preceding = content[line_start:start]
-                if preceding.rstrip().endswith(";"):
-                    start = line_start + len(preceding.rstrip()) - 1
-                elif content[line_start:start].strip() == "" and following.strip() == "":
-                    start = line_start
-                    end = line_stop
-                else:
-                    # An empty suite still needs a statement.
-                    replacement = "pass"
-            # Keep local suites valid and ordinary strings from becoming docstrings.
-            if node.col_offset and replacement == "":
-                replacement = "pass"
-                start, end = source.span(node)
-        source.replace(start, end, replacement)
-        count += node_count
-    return source.render(0, len(content)), count
-
-
 def fix_content(content: str, *, platform: str = sys.platform) -> tuple[str, int]:
     """Rewrite supported imported os.path calls and update their imports.
 
@@ -690,24 +352,25 @@ def fix_content(content: str, *, platform: str = sys.platform) -> tuple[str, int
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
-    if _references_namespace(tree):
+    nodes = tuple(ast.walk(tree))
+    if _references_namespace(nodes):
         # Dynamic writes can overwrite imported aliases and generated constructors.
         return content, 0
     if any(
         isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
-        for node in ast.walk(tree)
+        for node in nodes
     ):
         # Unknown exports can overwrite both imported and generated constructor aliases.
         return content, 0
     if any(
         getattr(node, "type_params", ()) or isinstance(node, getattr(ast, "TypeAlias", ()))
-        for node in ast.walk(tree)
+        for node in nodes
     ):
         # Type parameters and lazy aliases use annotation scopes we do not analyze.
         return content, 0
     mutations = MutationCollector()
     mutations.visit(tree)
-    fixer = _PathFixer(content, tree, mutations, platform)
+    fixer = _PathFixer(content, tree, mutations, platform, nodes)
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))
     updated, import_count = _clean_imports(updated)
