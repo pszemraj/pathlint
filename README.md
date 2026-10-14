@@ -92,7 +92,8 @@ own Git rules.
 
 Explicitly named files bypass Git and built-in exclusions. **Explicit
 `--exclude` patterns still apply**, including to filenames supplied by
-pre-commit.
+pre-commit. File symlinks select their resolved Python targets once; exclusions
+match both the link and target paths.
 
 ### Output
 
@@ -207,10 +208,13 @@ Pathlib aliases are reused where possible.
 
 Supported calls include `exists`, `isfile`, `isdir`, `isabs`, `join`, `basename`,
 `dirname`, and `expanduser`. Unsupported references retain their imports.
-Keyword arguments, starred arguments, literal byte paths, and some known
-inexact literal forms are left unchanged. Calls with uncertain branch or loop
-bindings and methods whose `os.path` attributes are assigned or deleted are also
-left unchanged. `abspath`, `splitext`, `sep`, and
+Keyword arguments, starred arguments, literal file descriptors or byte paths,
+and known inexact literal forms are left unchanged. These include empty paths,
+trailing separators, and named-user expansion. Calls with uncertain branch,
+exception, match, or loop bindings and methods whose `os.path` attributes are
+assigned or deleted are also left unchanged. Fixes retain imports when
+annotations or `__all__` may reference them, and avoid constructors affected by
+Pathlib mutations. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
 or returned incorrect values.
 
