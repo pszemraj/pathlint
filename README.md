@@ -232,6 +232,15 @@ Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes or callable internals are assigned or
 deleted are also left unchanged. Calls outside annotation expressions remain
 eligible for fixes.
+Mutation checks follow direct assignment copies of imported modules and callables,
+including chained, annotated, named-expression, and literal unpacked assignments,
+literal container selections, and possible copies in conditional or Boolean expressions.
+Loop targets and default parameters also retain possible mutation origins.
+Copies stored in object attributes or container entries conservatively prevent
+fixes for the copied module or callable.
+These copies do not establish bindings for detection or migration of copied calls.
+Mutation origins are conservative across scopes and statement order; copies of
+callable internals can also exclude fixes for their exported parent.
 Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute

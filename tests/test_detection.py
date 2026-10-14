@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 import sys
 from pathlib import Path
 from textwrap import dedent, indent
@@ -904,6 +905,89 @@ def test_deferred_method_mutations_are_collected() -> None:
     detector = OSPathDetector(source.splitlines())
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {"os.path.basename"}
+
+
+@pytest.mark.parametrize(
+    "copy",
+    [
+        "alias = original",
+        "alias = second = original\nalias = second",
+        "alias = [original][0]",
+        "aliases = [original]\nalias = aliases[0]",
+        "alias = {'path': original}['path']",
+        "alias, = (*[original],)",
+        "*aliases, = (original,)\nalias = aliases[0]",
+        "alias, second = (original, 1) if flag else (None, 2)",
+        "alias, second = (original, 1) or (None, 2)",
+        "aliases = (original,)\nalias, = aliases",
+        "for alias in (original,):\n    pass",
+        "for alias in {original: None}:\n    pass",
+        "alias, = {original: None}",
+        "def writer(alias=original):\n    pass",
+        "def writer(*, alias=original):\n    pass",
+        "alias: object = original",
+        "(alias := original)",
+        "alias, (second,) = original, (original,)",
+        "alias, *unused = (original,)",
+        "alias = original if flag else other",
+        "alias = original or other",
+    ],
+)
+@pytest.mark.parametrize(
+    ("original", "mutation", "changed"),
+    [
+        ("osp", "alias.basename = custom", "os.path.basename"),
+        ("osp.basename", "alias.__code__ = custom.__code__", "os.path.basename.__code__"),
+        ("paths.Path", "alias.exists = custom", "pathlib.Path.exists"),
+    ],
+)
+def test_copied_alias_mutations_do_not_establish_read_bindings(
+    copy: str, original: str, mutation: str, changed: str
+) -> None:
+    source = (
+        "import os.path as osp\nimport pathlib as paths\n"
+        + copy.replace("original", original)
+        + "\n"
+        + mutation
+    )
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert changed in detector.mutated_attributes
+    assert detector.resolve(ast.parse("alias", mode="eval").body) is None
+    assert detector.resolve(ast.parse("osp.dirname", mode="eval").body) == "os.path.dirname"
+
+
+@pytest.mark.parametrize("target", ["box.module", "box['module']"])
+def test_namespace_copies_stored_in_objects_exclude_fixes(target: str) -> None:
+    source = f"import os.path as osp\n{target} = osp\nresult = osp.basename('a/b')\n"
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.escaped_origins == {"os.path"}
+    assert 3 in detector.offenses
+    assert detector.resolve(ast.parse("osp.basename", mode="eval").body) == "os.path.basename"
+    assert fix_content(source) == (source, 0)
+
+
+def test_alias_copy_cycles_have_finite_mutation_origins() -> None:
+    source = (
+        "import os as alias\nalias = alias.path\nalias = alias.basename\n"
+        "second = alias\nalias = second.child\n"
+        "alias.__code__ = custom.__code__\nimport os.path as osp\n"
+    )
+    program = (
+        "import ast, sys\nfrom pathlint.linter import OSPathDetector\n"
+        "source = sys.argv[1]\ndetector = OSPathDetector(source.splitlines())\n"
+        "detector.visit(ast.parse(source))\n"
+        "assert 'os.path.basename.__code__' in detector.mutated_attributes\n"
+        "assert detector.resolve(ast.parse('osp.basename', mode='eval').body) is None\n"
+    )
+    subprocess.run([sys.executable, "-c", program, source], timeout=5, check=True)
+
+
+def test_copied_alias_calls_remain_unresolved() -> None:
+    source = "import os.path as osp\nalias = osp\nresult = alias.basename('a/b')\n"
+    assert set(offenses(source)) == {1, 2}
+    assert fix_content(source) == (source, 0)
 
 
 @pytest.mark.parametrize(

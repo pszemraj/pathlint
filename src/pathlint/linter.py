@@ -138,7 +138,9 @@ class OSPathDetector(ast.NodeVisitor):
         self.os_imported = False
         self.path_aliases: set[str] = set()
         self.mutated_attributes: set[str] = set()
+        self.escaped_origins: set[str] = set()
         self.import_origins: dict[str, set[str]] = defaultdict(set)
+        self.mutation_aliases: dict[str, set[str]] = defaultdict(set)
         self.deferred: list[
             tuple[
                 ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
@@ -150,6 +152,7 @@ class OSPathDetector(ast.NodeVisitor):
 
     def visit_Module(self, node: ast.Module) -> None:
         """Visit module statements, then deferred bodies using final enclosing bindings."""
+        self._collect_mutation_aliases(node)
         for statement in node.body:
             self.visit(statement)
         # Function bodies use enclosing bindings after those scopes finish defining names.
@@ -230,10 +233,124 @@ class OSPathDetector(ast.NodeVisitor):
         :return set[str]: Previously imported spellings that the target may mutate.
         """
         if isinstance(node, ast.Name):
-            return self.import_origins.get(node.id, set())
+            return self.import_origins.get(node.id, set()) | self.mutation_aliases.get(
+                node.id, set()
+            )
         if isinstance(node, ast.Attribute):
             return {f"{origin}.{node.attr}" for origin in self._mutation_origins(node.value)}
+        if isinstance(node, ast.NamedExpr):
+            return self._mutation_origins(node.value)
+        if isinstance(node, ast.IfExp):
+            return self._mutation_origins(node.body) | self._mutation_origins(node.orelse)
+        if isinstance(node, ast.BoolOp):
+            return set().union(*(self._mutation_origins(value) for value in node.values))
+        if isinstance(node, (ast.Subscript, ast.Starred)):
+            return self._mutation_origins(node.value)
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return set().union(*(self._mutation_origins(value) for value in node.elts))
+        if isinstance(node, ast.Dict):
+            return set().union(
+                *(
+                    self._mutation_origins(value)
+                    for value in [*node.keys, *node.values]
+                    if value is not None
+                )
+            )
         return set()
+
+    def _collect_mutation_aliases(self, node: ast.Module) -> None:
+        """Collect possible copies before visiting deferred writers, without binding reads.
+
+        :param ast.Module node: Module containing imports and assignment copies.
+        """
+        copies: list[tuple[ast.AST, ast.AST]] = []
+        for child in ast.walk(node):
+            if isinstance(child, ast.Import):
+                for alias in child.names:
+                    name = alias.asname or alias.name.split(".")[0]
+                    origin = alias.name if alias.asname else alias.name.split(".")[0]
+                    self.mutation_aliases[name].add(origin)
+            elif isinstance(child, ast.ImportFrom) and child.module and not child.level:
+                for alias in child.names:
+                    self.mutation_aliases[alias.asname or alias.name].add(
+                        f"{child.module}.{alias.name}"
+                    )
+            elif isinstance(child, ast.Assign):
+                copies.extend((target, child.value) for target in child.targets)
+            elif isinstance(child, (ast.AnnAssign, ast.NamedExpr)) and child.value is not None:
+                copies.append((child.target, child.value))
+            elif isinstance(child, (ast.For, ast.AsyncFor, ast.comprehension)):
+                copies.append((child.target, child.iter))
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                positional = [*child.args.posonlyargs, *child.args.args]
+                copies.extend(
+                    zip(
+                        positional[len(positional) - len(child.args.defaults) :],
+                        child.args.defaults,
+                    )
+                )
+                copies.extend(
+                    (argument, default)
+                    for argument, default in zip(child.args.kwonlyargs, child.args.kw_defaults)
+                    if default is not None
+                )
+        # Copies can cross deferred bodies in either declaration order. Retaining
+        # every possible origin deliberately sacrifices scope/order precision.
+        changed = True
+        while changed:
+            changed = False
+            for target, value in copies:
+                changed |= self._retain_mutation_alias(target, value)
+
+    def _retain_mutation_alias(self, target: ast.AST, value: ast.AST) -> bool:
+        """Retain bounded import origins for a direct or unpacked assignment copy.
+
+        :param ast.AST target: Assignment target, parameter, or unpacking pattern.
+        :param ast.AST value: Expression copied into the target.
+        :return bool: Whether any possible mutation origin was added.
+        """
+        if isinstance(target, ast.Starred):
+            return self._retain_mutation_alias(target.value, value)
+        if isinstance(target, (ast.Name, ast.arg, ast.Attribute, ast.Subscript)):
+            origins = set()
+            for origin in self._mutation_origins(value):
+                if origin == "os":
+                    origins.add(origin)
+                elif origin == "os.path" or origin.startswith("os.path."):
+                    origins.add(".".join(origin.split(".")[:3]))
+                elif origin == "pathlib" or origin.startswith("pathlib."):
+                    origins.add(".".join(origin.split(".")[:2]))
+            # Collapse copied callable internals to their exported parent. This
+            # overapproximates mutations and prevents cyclic copies growing paths.
+            if isinstance(target, (ast.Attribute, ast.Subscript)):
+                # Object/container stores expose the copied object to writes that
+                # this name-based collector cannot resolve. Exclude it conservatively.
+                before = len(self.escaped_origins)
+                self.escaped_origins.update(
+                    "os.path" if origin == "os" else origin for origin in origins
+                )
+                return len(self.escaped_origins) != before
+            name = target.id if isinstance(target, ast.Name) else target.arg
+            before = len(self.mutation_aliases[name])
+            self.mutation_aliases[name].update(origins)
+            return len(self.mutation_aliases[name]) != before
+        changed = False
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            if len(target.elts) == len(value.elts) and not any(
+                isinstance(item, ast.Starred) for item in (*target.elts, *value.elts)
+            ):
+                for item, expression in zip(target.elts, value.elts):
+                    changed |= self._retain_mutation_alias(item, expression)
+            else:
+                # Starred unpacking can shift positions. Every literal element
+                # is a possible origin for each remaining assignment target.
+                for item in target.elts:
+                    for expression in value.elts:
+                        changed |= self._retain_mutation_alias(item, expression)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                changed |= self._retain_mutation_alias(item, value)
+        return changed
 
     def visit_Import(self, node: ast.Import) -> None:
         """Bind imported modules and record direct os.path imports."""

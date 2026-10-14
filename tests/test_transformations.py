@@ -2341,6 +2341,81 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "missing",
             False,
         ),
+        *[
+            (
+                copy + "\nalias.basename = lambda value: 'custom'\n"
+                "result = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for copy in (
+                "alias = osp",
+                "alias = second = osp\nalias = second",
+                "alias = [osp][0]",
+                "aliases = [osp]\nalias = aliases[0]",
+                "alias = {'path': osp}['path']",
+                "alias, = (*[osp],)",
+                "*aliases, = (osp,)\nalias = aliases[0]",
+                "alias, second = (osp, 1) if True else (None, 2)",
+                "alias, second = (osp, 1) or (None, 2)",
+                "aliases = (osp,)\nalias, = aliases",
+                "for alias in (osp,):\n    pass",
+                "for alias in {osp: None}:\n    pass",
+                "alias, = {osp: None}",
+                "box = SimpleNamespace()\nbox.module = osp\nalias = box.module",
+                "box = {}\nbox['module'] = osp\nalias = box['module']",
+                "alias: object = osp",
+                "(alias := osp)",
+                "alias, (second,) = osp, (osp,)",
+                "alias, *unused = (osp,)",
+                "flag = True\nalias = osp if flag else object()",
+                "alias = osp or object()",
+            )
+        ],
+        (
+            "alias = osp\ndel alias.basename\n"
+            "try:\n    result = osp.basename('directory/file')\n"
+            "except AttributeError:\n    result = 'missing'\n",
+            "missing",
+            False,
+        ),
+        (
+            "alias = osp.basename\ndef custom(value):\n    return 'custom'\n"
+            "alias.__code__ = custom.__code__\n"
+            "result = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "def writer():\n    alias.basename = lambda value: 'custom'\n"
+            "def maker():\n    global alias\n    alias = osp\n"
+            "maker()\nwriter()\nresult = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        *[
+            (
+                f"def writer({parameter}):\n    alias.basename = lambda value: 'custom'\n"
+                "writer()\nresult = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for parameter in ("alias=osp", "*, alias=osp")
+        ],
+        (
+            "import os as alias\nalias = alias.path\nalias = alias.basename\n"
+            "def custom(value):\n    return 'custom'\n"
+            "alias.__code__ = custom.__code__\nimport os\n"
+            "result = os.path.basename('directory/file')\n",
+            "custom",
+            True,  # The unused osp import is removed; the customized call remains.
+        ),
+        (
+            "alias = osp\nalias.basename = lambda value: 'custom'\n"
+            "result = osp.dirname('directory/file')\n",
+            "directory",
+            True,
+        ),
     ],
 )
 def test_mutated_path_attributes_preserve_results(body: str, expected: str, changes: bool) -> None:
@@ -2385,6 +2460,9 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
         "paths.PurePath.name = property(lambda self: 'custom')",
         "from pathlib import PurePath as constructor\nconstructor.name = property(lambda self: 'custom')",
         "paths.PosixPath.name = property(lambda self: 'custom')",
+        "alias = paths\nalias.Path = lambda value: None",
+        "alias: object = paths.Path\nalias.exists = lambda self: True",
+        "(alias := paths.PurePath)\nalias.name = property(lambda self: 'custom')",
     ],
 )
 def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
