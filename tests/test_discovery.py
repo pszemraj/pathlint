@@ -321,6 +321,37 @@ def test_explicit_file_symlink_preserves_alias_exclusions(
 
 
 @pytest.mark.parametrize("respect_gitignore", [False, True])
+def test_directory_file_symlinks_are_normalized(repo: Path, respect_gitignore: bool) -> None:
+    target = write(repo, "real/target.py")
+    links = repo / "links"
+    links.mkdir()
+    alias = links / "alias.py"
+    alias.symlink_to(target)
+    assert discover_files([repo, target, links], respect_gitignore=respect_gitignore) == (
+        [target],
+        [],
+    )
+    assert discover_files(
+        [repo], exclude_patterns=("target.py",), respect_gitignore=respect_gitignore
+    ) == ([], [])
+    assert discover_files(
+        [links], exclude_patterns=("links/*.py",), respect_gitignore=respect_gitignore
+    ) == ([], [])
+
+    # Automatic exclusions apply to a symlink's destination too; named files bypass them.
+    built = write(repo, "build/generated.py")
+    target.unlink()
+    alias.unlink()
+    alias.symlink_to(built)
+    assert discover_files([links], respect_gitignore=respect_gitignore) == ([], [])
+    assert discover_files([links], default_excludes=(), respect_gitignore=respect_gitignore) == (
+        [built],
+        [],
+    )
+    assert discover_files([alias], respect_gitignore=respect_gitignore) == ([built], [])
+
+
+@pytest.mark.parametrize("respect_gitignore", [False, True])
 @pytest.mark.parametrize("pattern", ["alias/", "alias/*.py", "./alias/deep", "alias/*/no.py"])
 def test_directory_symlink_preserves_root_and_descendant_alias_patterns(
     repo: Path, pattern: str, respect_gitignore: bool

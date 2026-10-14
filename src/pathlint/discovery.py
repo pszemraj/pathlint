@@ -96,6 +96,22 @@ def discover_files(
             or is_excluded(alias, exclude_patterns, directory=directory)
         )
 
+    def add_file(candidate: Path, alias: Path) -> None:
+        """Add a regular Python file once, honoring its resolved and alias paths.
+
+        :param Path candidate: File path found by Git or a filesystem walk.
+        :param Path alias: File spelling under the original input directory.
+        """
+        if candidate.suffix != ".py" or not candidate.is_file() or excluded(candidate, alias):
+            return
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError) as error:
+            errors.append((candidate, str(error)))
+            return
+        if resolved.suffix == ".py" and not excluded(resolved, alias):
+            files.add(resolved)
+
     def walk(root: Path, alias: Path) -> None:
         """Walk a directory, prune exclusions, and scan nested Git repositories.
 
@@ -123,13 +139,7 @@ def discover_files(
                 if not excluded(current / name, current_alias / name, directory=True)
             ]
             for name in names:
-                candidate = current / name
-                if (
-                    candidate.suffix == ".py"
-                    and candidate.is_file()
-                    and not excluded(candidate, current_alias / name)
-                ):
-                    files.add(candidate)
+                add_file(current / name, current_alias / name)
 
     def scan(root: Path, alias: Path) -> None:
         """Select a directory's files through Git or a filesystem walk.
@@ -177,12 +187,8 @@ def discover_files(
                         if candidate.is_dir() and not candidate.is_symlink():
                             if not excluded(candidate, candidate_alias, directory=True):
                                 scan(candidate, candidate_alias)
-                        elif (
-                            candidate.suffix == ".py"
-                            and candidate.is_file()
-                            and not excluded(candidate, candidate_alias)
-                        ):
-                            files.add(candidate)
+                        else:
+                            add_file(candidate, candidate_alias)
                     return
             except OSError as error:
                 errors.append((root, str(error)))
