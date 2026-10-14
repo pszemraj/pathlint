@@ -270,22 +270,142 @@ def test_constructor_does_not_collide_with_local_names(tmp_path: Path, preamble:
         "def outer():\n    def inner():\n        return p.exists('missing')\n    from os import path as p\n    return inner()\nresult = outer()\n",
     ],
 )
-def test_imports_defined_after_function_are_resolved(source: str) -> None:
-    updated, count = fix_content(source)
-    assert count > 0
-    assert run(updated) == run(source)
+def test_imports_defined_after_function_are_not_rewritten(source: str) -> None:
+    assert fix_content(source) == (source, 0)
+    assert run(source) is False
 
 
-def test_reassigned_global_alias_is_not_rewritten() -> None:
-    source = (
+@pytest.mark.parametrize(
+    "body",
+    [
         "import os\n"
-        "from types import SimpleNamespace\n"
         "def check():\n    return os.path.exists('file')\n"
-        "os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
-        "result = check()\n"
+        "os = SimpleNamespace(path=custom)\nresult = check()\n",
+        "import os.path as osp\n"
+        "def check():\n    return osp.exists('file')\n"
+        "osp = custom\nresult = check()\n",
+        "osp = custom\n"
+        "def check():\n    return osp.exists('file')\n"
+        "result = check()\nimport os.path as osp\n",
+        "import os.path as osp\n"
+        "def check():\n    return osp.exists('file')\n"
+        "osp = custom\nresult = check()\nimport os.path as osp\n",
+        "def outer():\n"
+        "    osp = custom\n"
+        "    def check():\n        return osp.exists('file')\n"
+        "    result = check()\n    import os.path as osp\n    return result\n"
+        "result = outer()\n",
+        "osp = custom\n"
+        "check = lambda: osp.exists('file')\n"
+        "result = check()\nimport os.path as osp\n",
+        "osp = custom\n"
+        "class Check:\n    def check(self):\n        return osp.exists('file')\n"
+        "result = Check().check()\nimport os.path as osp\n",
+        "osp = custom\n"
+        "def invoke(function):\n    global result\n    result = function()\n    return function\n"
+        "@invoke\ndef check():\n    return osp.exists('file')\n"
+        "import os.path as osp\n",
+        "import os.path as osp\n"
+        "def writer():\n    global osp\n    osp = custom\n"
+        "def check():\n    return osp.exists('file')\n"
+        "writer()\nresult = check()\n",
+        "def outer():\n    import os.path as osp\n"
+        "    def writer():\n        nonlocal osp\n        osp = custom\n"
+        "    def check():\n        return osp.exists('file')\n"
+        "    writer()\n    return check()\n"
+        "result = outer()\n",
+    ],
+)
+def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
+    source = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(exists=lambda value: 'custom')\n" + body
     )
     assert fix_content(source) == (source, 0)
     assert run(source) == "custom"
+
+
+def test_deferred_string_conversion_respects_later_builtin_shadowing() -> None:
+    source = (
+        "import os.path as osp\n"
+        "def check():\n    return osp.join('directory', 'file')\n"
+        "str = lambda value: 'custom'\n"
+        "result = check()\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == str(Path("directory") / "file")
+
+
+def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> None:
+    source = (
+        "import os.path as osp\n"
+        "def check():\n    return osp.basename('directory\\\\file')\n"
+        "import ntpath as osp\n"
+        "result = check()\n"
+        "import os.path as osp\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == "file"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\ndef check():\n    return os.path.exists('missing')\nresult = check()\n",
+        "from os.path import exists\n"
+        "def check():\n    return exists('missing')\n"
+        "result = check()\n",
+        "import os.path as osp\ndef check():\n    return osp.exists('missing')\nresult = check()\n",
+        "import os.path as osp\ncheck = lambda: osp.exists('missing')\nresult = check()\n",
+        "def outer():\n    import os.path as osp\n"
+        "    def check():\n        return osp.exists('missing')\n"
+        "    return check()\n"
+        "result = outer()\n",
+        "from pathlib import Path as P\n"
+        "import os.path as osp\n"
+        "def check():\n    return osp.exists('missing')\n"
+        "P = lambda value: 'custom'\n"
+        "result = check()\n",
+    ],
+)
+def test_stable_deferred_imports_remain_rewritable(source: str) -> None:
+    updated, count = fix_content(source)
+    assert count > 0
+    assert run(updated) == run(source)
+    assert "return P(" not in updated
+
+
+def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> None:
+    source = (
+        "import os.path as osp\n"
+        "def check():\n    return osp.exists('missing')\n"
+        "from . import custom as osp\n"
+        "result = check()\n"
+        "import os.path as osp\n"
+        "print(result)\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    package = tmp_path / "example"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "custom.py").write_text("def exists(value): return 'custom'\n", encoding="utf-8")
+    for name, content in (("original", source), ("updated", updated)):
+        (package / f"{name}.py").write_text(content, encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import runpy,sys; sys.path.insert(0,sys.argv[1]); "
+                "runpy.run_module(sys.argv[2],run_name='__main__')",
+                str(tmp_path),
+                f"example.{name}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "custom"
 
 
 @pytest.mark.parametrize(

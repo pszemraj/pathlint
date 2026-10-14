@@ -290,11 +290,18 @@ class OSPathDetector(ast.NodeVisitor):
         if node.returns:
             self.visit(node.returns)
         self.scopes[-1][node.name] = None
+        self._defer_body(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _defer_body(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        """Queue a body with live enclosing bindings for subsequent analysis.
+
+        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda node: Deferred body owner.
+        """
         self.deferred.append(
             (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
         )
-
-    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_arguments(self, node: ast.arguments) -> None:
         """Visit function defaults before their subsequently evaluated annotations."""
@@ -314,9 +321,7 @@ class OSPathDetector(ast.NodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         """Visit lambda arguments and defer its body for lexical analysis."""
         self.visit(node.args)
-        self.deferred.append(
-            (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
-        )
+        self._defer_body(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Visit class definition expressions and the body in its own scope."""

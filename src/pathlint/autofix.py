@@ -96,6 +96,27 @@ class _PathFixer(OSPathDetector):
         self.source = _Source(content)
         self.count = 0
         self.needs_import = False
+        # Deferred bodies may run before later imports, or between rebindings.
+        # Same-spelling writes in unrelated scopes also exclude an alias: avoiding
+        # uncertain migrations needs no execution-order or call-graph analysis.
+        self.deferred_rebindings = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+        }
+        self.deferred_rebindings.update(
+            name
+            for node in ast.walk(tree)
+            if not isinstance(node, ast.alias)
+            for name in (getattr(node, "name", None), getattr(node, "rest", None))
+            if isinstance(name, str)
+        )
+        self.deferred_rebindings.update(
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level
+            for alias in node.names
+        )
         names = (
             {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
             | {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
@@ -134,6 +155,14 @@ class _PathFixer(OSPathDetector):
         self.path_name = "Path"
         while self.path_name in names:
             self.path_name = "PathlintPath" if self.path_name == "Path" else self.path_name + "_"
+
+    def _defer_body(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        """Freeze certain enclosing imports without borrowing later bindings.
+
+        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda node: Deferred body owner.
+        """
+        scopes = [{**scope, **dict.fromkeys(self.deferred_rebindings)} for scope in self.scopes]
+        self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
 
     def constructor(self) -> str:
         """Reuse a visible pathlib constructor or request an import for a new alias.
@@ -592,6 +621,9 @@ def fix_content(content: str) -> tuple[str, int]:
     detector.visit(tree)
     fixer = _PathFixer(content, tree)
     fixer.mutated_attributes.update(detector.mutated_attributes)
+    fixer.deferred_rebindings.update(
+        name for name, origins in detector.import_origins.items() if len(origins) > 1
+    )
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))
     updated, import_count = _clean_imports(updated)

@@ -324,12 +324,10 @@ def test_definition_walrus_does_not_become_function_local(parameter: str) -> Non
         "result = f()\n"
     )
     assert set(offenses(source)) == {3}
-    updated, count = fix_content(source)
-    assert count == 1
-    for content in (source, updated):
-        namespace = {}
-        exec(compile(content, "<definition>", "exec", dont_inherit=True), namespace)
-        assert namespace["result"] is False
+    assert fix_content(source) == (source, 0)
+    namespace = {}
+    exec(compile(source, "<definition>", "exec", dont_inherit=True), namespace)
+    assert namespace["result"] is False
 
 
 @pytest.mark.parametrize(
