@@ -323,8 +323,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reconfigure = getattr(sys.stdout, "reconfigure", None)
         if reconfigure is not None:
-            reconfigure(errors="backslashreplace")
-        args = parse_args(argv)
+            reconfigure(errors="backslashreplace", line_buffering=True)
+        try:
+            args = parse_args(argv)
+        except SystemExit:
+            # argparse suppresses output OSErrors; surface buffered failures here.
+            sys.stdout.flush()
+            raise
         files, discovery_errors = discover_files(
             args.paths,
             exclude_patterns=args.exclude,

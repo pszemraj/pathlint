@@ -453,6 +453,43 @@ def test_interrupt_returns_conventional_status(monkeypatch: pytest.MonkeyPatch) 
     assert cli.main(["files"]) == 130
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["files", "sample.py"],
+        ["check", "sample.py"],
+        ["check", "sample.py", "--output-format=json"],
+        ["fix", "sample.py", "--dry-run"],
+        ["--help"],
+        ["check", "--help"],
+        ["--version"],
+    ],
+)
+def test_closed_stdout_pipe_returns_one_without_shutdown_error(
+    workspace: Path, args: list[str]
+) -> None:
+    path = write_file(workspace, "sample.py")
+    original = path.read_bytes()
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(Path(cli.__file__).parents[1]),
+        COV_CORE_CONFIG=str(Path(__file__).resolve().parents[1] / "pyproject.toml"),
+    )
+    with subprocess.Popen(
+        [sys.executable, "-m", "pathlint", *args],
+        cwd=workspace,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as process:
+        assert process.stdout is not None
+        assert process.stderr is not None
+        process.stdout.close()
+        assert process.wait(timeout=10) == 1
+        assert process.stderr.read() == b""
+    assert path.read_bytes() == original
+
+
 def test_module_commands_follow_exit_and_stream_contract(workspace: Path) -> None:
     path = write_file(workspace, "sample.py")
     listing = invoke(workspace, "files")
