@@ -931,6 +931,47 @@ def test_import_cleanup_preserves_namespace_lookups(
 
 
 @pytest.mark.parametrize(
+    ("namespace", "statement", "expected"),
+    [
+        ("eval", "result = {accessor}(\"osp.basename('a/b')\")", "b"),
+        ("dir", "result = 'osp' in {accessor}()", True),
+        ("exec", "{accessor}(\"result = osp.basename('a/b')\")", "b"),
+    ],
+)
+@pytest.mark.parametrize("rewrite_call", [False, True])
+@pytest.mark.parametrize(
+    ("imports", "accessor"),
+    [
+        ("", "{namespace}"),
+        ("import builtins as python_builtins\n", "python_builtins.{namespace}"),
+        ("from builtins import {namespace} as inspect_namespace\n", "inspect_namespace"),
+        ("inspect_namespace = {namespace}\n", "inspect_namespace"),
+    ],
+)
+def test_import_cleanup_preserves_dynamic_namespace_access(
+    namespace: str,
+    statement: str,
+    expected: object,
+    rewrite_call: bool,
+    imports: str,
+    accessor: str,
+) -> None:
+    source = (
+        "import os.path as osp\n"
+        + imports.format(namespace=namespace)
+        + statement.format(accessor=accessor.format(namespace=namespace))
+        + "\n"
+    )
+    if rewrite_call:
+        source += "filename = osp.basename('directory/file')\n"
+    updated, count = fix_content(source)
+    assert count == int(rewrite_call)
+    assert "import os.path as osp" in updated
+    assert run(updated) == run(source) == expected
+    assert fix_content(updated) == (updated, 0)
+
+
+@pytest.mark.parametrize(
     ("imports", "accessor"),
     [
         ("", "vars"),
