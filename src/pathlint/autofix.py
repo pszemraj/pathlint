@@ -85,6 +85,8 @@ class _Source:
 class _PathFixer(OSPathDetector):
     """Resolve imported calls and collect conservative pathlib source edits."""
 
+    _use_literal_conditions = False
+
     def __init__(self, content: str, tree: ast.Module) -> None:
         """Initialize source edits and choose an unused pathlib constructor alias.
 
@@ -217,24 +219,6 @@ class _PathFixer(OSPathDetector):
                     return f"{name}.Path"
         self.needs_import = True
         return self.path_name
-
-    def visit_If(self, node: ast.If) -> None:
-        """Visit both branches independently and merge their resulting bindings.
-
-        :param ast.If node: Conditional statement to inspect for bindings and calls.
-        """
-        self.visit(node.test)
-        scope = self.scopes[-1]
-        before = scope.copy()
-        for statement in node.body:
-            self.visit(statement)
-        body = scope.copy()
-        scope.clear()
-        scope.update(before)
-        for statement in node.orelse:
-            self.visit(statement)
-        alternative = scope.copy()
-        self.merge_bindings([body, alternative])
 
     def visit_Try(self, node: ast.Try) -> None:
         """Merge successful and interrupted bindings before visiting the final suite.

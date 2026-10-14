@@ -29,17 +29,17 @@ class _ScopeNames(ast.NodeVisitor):
         """Collect a function parameter as a local binding."""
         self.names.add(node.arg)
 
-    def visit_Import(self, node: ast.Import) -> None:
-        """Collect the names introduced by an import statement."""
-        names = {alias.asname or alias.name.split(".")[0] for alias in node.names}
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        """Collect binding names introduced by either import syntax."""
+        names = {
+            alias.asname
+            or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name)
+            for alias in node.names
+        }
         self.names.update(names)
         self.imports.update(names)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Collect the aliases introduced by a from-import statement."""
-        names = {alias.asname or alias.name for alias in node.names}
-        self.names.update(names)
-        self.imports.update(names)
+    visit_ImportFrom = visit_Import
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Collect function bindings and enclosing expressions without entering its body.
@@ -116,22 +116,20 @@ class _ScopeNames(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_MatchAs(self, node: ast.AST) -> None:
-        """Collect a named match capture and visit its nested pattern."""
-        if node.name:
-            self.names.add(node.name)
+        """Collect named or mapping-rest captures and visit nested patterns."""
+        name = getattr(node, "name", None) or getattr(node, "rest", None)
+        if name:
+            self.names.add(name)
         self.generic_visit(node)
 
     visit_MatchStar = visit_MatchAs
-
-    def visit_MatchMapping(self, node: ast.AST) -> None:
-        """Collect a mapping-rest capture and visit its nested patterns."""
-        if node.rest:
-            self.names.add(node.rest)
-        self.generic_visit(node)
+    visit_MatchMapping = visit_MatchAs
 
 
 class OSPathDetector(ast.NodeVisitor):
     """Find os.path usage while respecting import aliases and local shadowing."""
+
+    _use_literal_conditions = True
 
     def __init__(self, lines: list[str]) -> None:
         """Initialize lexical bindings and offenses for the supplied source lines."""
@@ -443,7 +441,7 @@ class OSPathDetector(ast.NodeVisitor):
         for statement in node.orelse:
             self.visit(statement)
         alternative = scope.copy()
-        if isinstance(node.test, ast.Constant):
+        if self._use_literal_conditions and isinstance(node.test, ast.Constant):
             # Still inspect both suites, but literal conditions determine later bindings.
             self.merge_bindings([body if node.test.value else alternative])
         else:
@@ -592,21 +590,29 @@ class OSPathDetector(ast.NodeVisitor):
                 self.visit(key)
             self.visit(value)
 
-    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
-        """Visit for suites without assuming bindings stay unchanged across iterations.
+    def visit_For(self, node: ast.For | ast.AsyncFor | ast.While) -> None:
+        """Visit loop suites without assuming bindings survive repeated iterations.
 
-        :param ast.For | ast.AsyncFor node: Synchronous or asynchronous for statement.
+        :param ast.For | ast.AsyncFor | ast.While node: Loop with an optional else suite.
         """
-        self.visit(node.iter)
+        if isinstance(node, ast.While):
+            header = node.test
+        else:
+            self.visit(node.iter)
+            header = node.target
         before = self.scopes[-1].copy()
         names = _ScopeNames()
-        for statement in [node.target, *node.body]:
+        for statement in [header, *node.body]:
             names.visit(statement)
         if "*" in names.names:
             names.names.update(self.scopes[-1])
         self.scopes[-1].update(dict.fromkeys(names.names))
+        # A while test always runs; a for target may never be assigned.
+        if isinstance(node, ast.While):
+            self.visit(header)
         entry = self.scopes[-1].copy()
-        self.visit(node.target)
+        if not isinstance(node, ast.While):
+            self.visit(header)
         for statement in node.body:
             self.visit(statement)
         body = self.scopes[-1].copy()
@@ -616,28 +622,7 @@ class OSPathDetector(ast.NodeVisitor):
         self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     visit_AsyncFor = visit_For
-
-    def visit_While(self, node: ast.While) -> None:
-        """Visit while suites without assuming bindings stay unchanged across iterations.
-
-        :param ast.While node: While statement whose body may never execute.
-        """
-        before = self.scopes[-1].copy()
-        names = _ScopeNames()
-        for statement in [node.test, *node.body]:
-            names.visit(statement)
-        if "*" in names.names:
-            names.names.update(self.scopes[-1])
-        self.scopes[-1].update(dict.fromkeys(names.names))
-        self.visit(node.test)
-        entry = self.scopes[-1].copy()
-        for statement in node.body:
-            self.visit(statement)
-        body = self.scopes[-1].copy()
-        self.merge_bindings([before, entry, body])
-        for statement in node.orelse:
-            self.visit(statement)
-        self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
+    visit_While = visit_For
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         """Visit an augmented target's expressions before its value and name binding."""
@@ -664,18 +649,14 @@ class OSPathDetector(ast.NodeVisitor):
             self._delete_name(node.name)
 
     def visit_MatchAs(self, node: ast.AST) -> None:
-        """Shadow a named match capture and visit its nested pattern."""
-        if node.name:
-            self.scopes[-1][node.name] = None
+        """Shadow named or mapping-rest captures and visit nested patterns."""
+        name = getattr(node, "name", None) or getattr(node, "rest", None)
+        if name:
+            self.scopes[-1][name] = None
         self.generic_visit(node)
 
     visit_MatchStar = visit_MatchAs
-
-    def visit_MatchMapping(self, node: ast.AST) -> None:
-        """Shadow a mapping-rest capture and visit its nested patterns."""
-        if node.rest:
-            self.scopes[-1][node.rest] = None
-        self.generic_visit(node)
+    visit_MatchMapping = visit_MatchAs
 
     def visit_ListComp(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
