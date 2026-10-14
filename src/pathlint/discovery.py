@@ -27,7 +27,28 @@ def display_path(filepath: Path) -> str:
         return filepath.as_posix()
 
 
-def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = False) -> bool:
+def _normalize_patterns(
+    patterns: Collection[str], *, directory_only: bool = False
+) -> list[tuple[str, bool, bool, bool]]:
+    """Prepare pattern text and directory, path, and absolute matching flags."""
+    normalized = []
+    for pattern in patterns:
+        directories = directory_only or pattern.endswith("/")
+        pattern = pattern.rstrip("/") or pattern[:1]
+        path_pattern = "/" in pattern
+        if pattern.startswith("./"):
+            pattern = pattern[2:]
+        normalized.append((pattern, directories, path_pattern, Path(pattern).is_absolute()))
+    return normalized
+
+
+def _is_excluded(
+    filepath: Path,
+    patterns: Sequence[tuple[str, bool, bool, bool]],
+    cwd: Path,
+    *,
+    directory: bool = False,
+) -> bool:
     """Match a path and its ancestors against case-sensitive fnmatch patterns.
 
     Slashless patterns match names; path patterns match working-directory-relative
@@ -35,27 +56,27 @@ def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = Fa
     directory. A trailing slash restricts a pattern to directories.
 
     :param Path filepath: Absolute file or directory path to test.
-    :param Sequence[str] patterns: Name or path patterns; directory matches exclude descendants.
+    :param Sequence[tuple[str, bool, bool, bool]] patterns: Normalized exclusions and matching flags.
+    :param Path cwd: Working directory used to anchor relative patterns.
     :param bool directory: Treat filepath itself as a directory for trailing-slash patterns.
     :return bool: True if a pattern matches the path or one of its ancestor directories.
     """
-    cwd = Path.cwd()
     above_cwd = False
     for candidate in (filepath, *filepath.parents):
-        for pattern in patterns:
-            if pattern.endswith("/") and candidate == filepath and not directory:
+        for pattern, directories, path_pattern, absolute in patterns:
+            if directories and candidate == filepath and not directory:
                 continue
-            pattern = pattern.rstrip("/") or pattern[:1]
-            path_pattern = "/" in pattern
-            if pattern.startswith("./"):
-                pattern = pattern[2:]
-            absolute = Path(pattern).is_absolute()
             if above_cwd and not absolute:
                 continue
             if absolute:
                 value = candidate.as_posix()
             else:
-                value = display_path(candidate) if path_pattern else candidate.name
+                value = candidate.name
+                if path_pattern:
+                    try:
+                        value = candidate.relative_to(cwd).as_posix()
+                    except ValueError:
+                        value = candidate.as_posix()
             if fnmatchcase(value, pattern):
                 return True
         if candidate == cwd:
@@ -86,22 +107,27 @@ def discover_files(
     errors: list[tuple[Path, str]] = []
     visited: set[tuple[Path, Path]] = set()
     git = shutil.which("git") if respect_gitignore else None
+    cwd = Path.cwd()
+    explicit_patterns = _normalize_patterns(exclude_patterns)
+    automatic_patterns = explicit_patterns + _normalize_patterns(
+        default_excludes, directory_only=True
+    )
 
-    def excluded(candidate: Path, alias: Path, *, directory: bool = False) -> bool:
+    def excluded(
+        candidate: Path, alias: Path, *, directory: bool = False, automatic: bool = True
+    ) -> bool:
         """Check default and explicit exclusions against both path spellings.
 
         :param Path candidate: Resolved path being considered for automatic discovery.
         :param Path alias: Input path spelling before resolving symlinks.
         :param bool directory: Whether candidate is a directory.
+        :param bool automatic: Include default directory exclusions for discovered inputs.
         :return bool: True if default or explicit exclusions reject the candidate.
         """
-        directories = candidate if directory else candidate.parent
-        alias_directories = alias if directory else alias.parent
-        return (
-            is_excluded(directories, tuple(default_excludes), directory=True)
-            or is_excluded(alias_directories, tuple(default_excludes), directory=True)
-            or is_excluded(candidate, exclude_patterns, directory=directory)
-            or is_excluded(alias, exclude_patterns, directory=directory)
+        patterns = automatic_patterns if automatic else explicit_patterns
+        return any(
+            _is_excluded(path, patterns, cwd, directory=directory)
+            for path in dict.fromkeys((candidate, alias))
         )
 
     def add_file(candidate: Path, alias: Path) -> None:
@@ -114,7 +140,7 @@ def discover_files(
             return
         try:
             resolved = candidate.resolve()
-            if excluded(resolved, alias) or not resolved.is_file():
+            if (resolved != candidate and excluded(resolved, resolved)) or not resolved.is_file():
                 return
         except (OSError, RuntimeError) as error:
             errors.append((candidate, str(error)))
@@ -256,11 +282,8 @@ def discover_files(
                                     scan(nested, alias / nested.relative_to(root))
                                     break
                             else:
-                                if excluded(candidate, candidate_alias):
-                                    continue
                                 if not candidate.is_symlink() and candidate.is_dir():
-                                    if not excluded(candidate, candidate_alias, directory=True):
-                                        scan(candidate, candidate_alias)
+                                    scan(candidate, candidate_alias)
                                 else:
                                     add_file(candidate, candidate_alias)
                         except OSError as error:
@@ -288,25 +311,19 @@ def discover_files(
                 path = path.resolve()
             except RuntimeError as error:
                 # Python 3.9-3.12 report symbolic-link loops as RuntimeError.
-                if not is_excluded(alias, exclude_patterns):
+                if not excluded(alias, alias, automatic=False):
                     errors.append((path, str(error)))
                 continue
             if not path.exists():
-                if alias.is_symlink() and (
-                    is_excluded(path, exclude_patterns) or is_excluded(alias, exclude_patterns)
-                ):
+                if alias.is_symlink() and excluded(path, alias, automatic=False):
                     continue
                 errors.append((path, "Path does not exist"))
             elif path.is_file():
-                if (
-                    path.suffix == ".py"
-                    and not is_excluded(path, exclude_patterns)
-                    and not is_excluded(alias, exclude_patterns)
-                ):
+                if path.suffix == ".py" and not excluded(path, alias, automatic=False):
                     files.add(path)
             else:
                 scan(path, alias)
         except OSError as error:
-            if not is_excluded(path, exclude_patterns) and not is_excluded(alias, exclude_patterns):
+            if not excluded(path, alias, automatic=False):
                 errors.append((path, str(error)))
     return sorted(files), errors
