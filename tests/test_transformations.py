@@ -1041,6 +1041,33 @@ def test_import_cleanup_preserves_class_attributes(body: str, lookup: str) -> No
     assert run(updated) == run(source)
 
 
+@pytest.mark.parametrize(("alias", "target"), [("", "sep"), (" as separator", "separator")])
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [
+        ("", ""),
+        ("if True:\n", ""),
+        ("for _ in range(2):\n", ""),
+        ("remaining = 2\nwhile remaining:\n", "    remaining -= 1\n"),
+        ("def update():\n", "    return result\nresult = update()\n"),
+    ],
+)
+def test_import_cleanup_preserves_augmented_assignment_reads(
+    alias: str, target: str, prefix: str, suffix: str
+) -> None:
+    body = (
+        f"from os.path import basename, sep{alias}\n"
+        "result = basename('a/b')\n"
+        f"{target} += 'suffix'\n"
+    )
+    source = prefix + (indent(body, "    ") if prefix else body) + suffix
+    updated, count = fix_content(source)
+    assert count > 0
+    assert f"from os.path import sep{alias}" in updated
+    assert run(updated) == run(source)
+    assert fix_content(updated) == (updated, 0)
+
+
 @pytest.mark.parametrize("namespace", ["globals", "locals", "vars"])
 @pytest.mark.parametrize("key", ["'osp'", "''.join(['o', 's', 'p'])"])
 @pytest.mark.parametrize("rewrite_call", [False, True])

@@ -673,6 +673,12 @@ def _clean_imports(content: str) -> tuple[str, int]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
     }
+    # Augmented assignment reads its target even though the AST marks it as Store.
+    referenced.update(
+        node.target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
+    )
     # Removing an enclosing import can make nonlocal declarations uncompilable.
     referenced.update(
         name for node in ast.walk(tree) if isinstance(node, ast.Nonlocal) for name in node.names
