@@ -36,6 +36,11 @@ def run(source: str) -> object:
         ("import pathlib\nimport os", "os.path.exists(FILE)"),
         ("import pathlib as paths\nimport os", "os.path.exists(FILE)"),
         ("from pathlib import Path as P\nimport os", "os.path.exists(FILE)"),
+        ("import os.path as paths", "(paths.basename)('directory/file')"),
+        ("import os", "((os.path.exists))(FILE)"),
+        ("from os.path import exists as present", "(present)(FILE)"),
+        ("import os", "(os.path.basename)((os.path.join)('directory', 'file'))"),
+        ("import os", "(\n    (os.path.basename)  # callable (comment\n    ('directory/file')\n)"),
     ],
 )
 def test_supported_calls_preserve_results(tmp_path: Path, imports: str, expression: str) -> None:
@@ -115,6 +120,23 @@ def test_unicode_offsets_and_multiline_comments(tmp_path: Path) -> None:
     assert count > 0
     assert "label = '🐍';" in updated
     assert "# keep this comment" in updated
+    assert run(updated) == run(original)
+
+
+def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:
+    original = (
+        "import os.path as osp\n"
+        "result = (\n"
+        "    (  # before callable 🐍 (\n"
+        "        osp.exists\n"
+        "    )  # after callable (\n"
+        f"    ({str(tmp_path)!r})\n"
+        ")\n"
+    )
+    updated, count = fix_content(original)
+    assert count > 0
+    assert "# before callable 🐍 (" in updated
+    assert "# after callable (" in updated
     assert run(updated) == run(original)
 
 

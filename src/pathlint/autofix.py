@@ -321,13 +321,18 @@ class _PathFixer(OSPathDetector):
         ):
             return
         start, end = self.source.span(node)
-        _, function_end = self.source.span(node.func)
-        arguments = self.source.render(function_end, end)
+        function_start, function_end = self.source.span(node.func)
         constructor = self.constructor()
+        # Replace only the callee span, retaining wrapping parentheses and comments.
+        call = (
+            self.source.render(start, function_start)
+            + constructor
+            + self.source.render(function_end, end)
+        )
         if function == "join":
-            replacement = f"str({constructor}{arguments})"
+            replacement = f"str({call})"
         else:
-            replacement = f"{constructor}{arguments}.{METHODS[function]}"
+            replacement = f"{call}.{METHODS[function]}"
             if function in {"dirname", "expanduser"}:
                 replacement = f"str({replacement})"
         self.source.replace(start, end, replacement)
