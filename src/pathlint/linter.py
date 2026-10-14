@@ -263,8 +263,20 @@ class OSPathDetector(ast.NodeVisitor):
             origin = self.resolve(node)
             if origin and (origin == "os.path" or origin.startswith("os.path.")):
                 self._record(node)
+        elif isinstance(node.ctx, ast.Del):
+            self._delete_name(node.id)
         else:
             self.scopes[-1][node.id] = None
+
+    def _delete_name(self, name: str) -> None:
+        """Remove a class local or retain an unbound name in other scopes.
+
+        :param str name: Binding explicitly deleted or cleared after an exception handler.
+        """
+        if self.scope_kinds[-1] == "class":
+            self.scopes[-1].pop(name, None)
+        else:
+            self.scopes[-1][name] = None
 
     def visit_If(self, node: ast.If) -> None:
         """Inspect branches independently and retain certain resulting bindings.
@@ -382,7 +394,9 @@ class OSPathDetector(ast.NodeVisitor):
                         break
         self.scopes.append({})
         self.scope_kinds.append("class")
-        self.scope_globals.append(names.globals)
+        # Missing class locals use LOAD_NAME's global fallback, skipping any
+        # enclosing function bindings. Explicit nonlocals retain lexical lookup.
+        self.scope_globals.append(names.globals | (names.names - names.external))
         for statement in node.body:
             self.visit(statement)
         self.scopes.pop()
@@ -455,7 +469,7 @@ class OSPathDetector(ast.NodeVisitor):
         for statement in node.body:
             self.visit(statement)
         if node.name:
-            self.scopes[-1][node.name] = None
+            self._delete_name(node.name)
 
     def visit_MatchAs(self, node: ast.AST) -> None:
         """Shadow a named match capture and visit its nested pattern."""

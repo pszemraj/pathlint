@@ -425,6 +425,124 @@ def test_class_assignment_does_not_shadow_global_inside_methods() -> None:
     assert set(offenses(source)) == {6}
 
 
+@pytest.mark.parametrize(
+    ("imports", "name", "expression", "import_lines"),
+    [
+        ("import os", "os", "os.path.basename('a/b')", set()),
+        ("import os as system", "system", "system.path.basename('a/b')", set()),
+        ("from os import path as paths", "paths", "paths.basename('a/b')", {1}),
+        ("from os.path import basename as base", "base", "base('a/b')", {1}),
+    ],
+)
+@pytest.mark.parametrize("cleanup", ["delete", "exception"])
+def test_class_deleted_binding_restores_global_import(
+    imports: str, name: str, expression: str, import_lines: set[int], cleanup: str
+) -> None:
+    if cleanup == "delete":
+        body = f"{name} = object()\ndel {name}\n"
+    else:
+        body = f"try:\n    raise ValueError\nexcept ValueError as {name}:\n    pass\n"
+    source = imports + "\nclass Example:\n" + indent(body, "    ")
+    source += f"    value = {expression}\nresult = Example.value\n"
+    target_line = len(source.splitlines()) - 1
+    assert set(offenses(source)) == import_lines | {target_line}
+    updated, count = fix_content(source)
+    assert count == 1
+    for content in (source, updated):
+        namespace: dict[str, object] = {}
+        exec(compile(content, "<class-deletion>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == "b"
+    assert fix_content(updated) == (updated, 0)
+
+
+@pytest.mark.parametrize(
+    "cleanup",
+    ["os = object()\ndel os", "try:\n    raise ValueError\nexcept ValueError as os:\n    pass"],
+)
+@pytest.mark.parametrize("global_import", [False, True])
+def test_nested_class_deleted_binding_uses_globals(cleanup: str, global_import: bool) -> None:
+    custom = "SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))"
+    source = "from types import SimpleNamespace\n"
+    source += "import os\n" if global_import else f"os = {custom}\n"
+    source += "def outer():\n"
+    source += f"    os = {custom}\n" if global_import else "    import os\n"
+    source += "    class Example:\n" + indent(cleanup + "\n", "        ")
+    source += "        value = os.path.basename('a/b')\n    return Example.value\n"
+    source += "result = outer()\n"
+    target_line = len(source.splitlines()) - 2
+    assert set(offenses(source)) == ({target_line} if global_import else set())
+    updated, _ = fix_content(source)
+    for content in (source, updated):
+        namespace: dict[str, object] = {}
+        exec(compile(content, "<nested-class-deletion>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == ("b" if global_import else "custom")
+
+
+@pytest.mark.parametrize("global_import", [False, True])
+def test_class_missing_locals_and_methods_select_their_namespaces(global_import: bool) -> None:
+    custom = "SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))"
+    source = "from types import SimpleNamespace\n"
+    source += "import os\n" if global_import else f"os = {custom}\n"
+    source += f"custom = {custom}\ndef outer():\n"
+    source += "    os = custom\n" if global_import else "    import os\n"
+    source += (
+        "    class Example:\n"
+        "        before = os.path.basename('a/b')\n"
+        "        os = object()\n"
+        "        del os\n"
+        "        after = os.path.basename('a/b')\n"
+        "        import os\n"
+        "        imported = os.path.basename('a/b')\n"
+        "        os = custom\n"
+        "        rebound = os.path.basename('a/b')\n"
+        "        def method(self):\n"
+        "            return os.path.basename('a/b')\n"
+        "    return (Example.before, Example.after, Example.imported, Example.rebound, Example().method())\n"
+        "result = outer()\n"
+    )
+    assert set(offenses(source)) == ({7, 10, 12} if global_import else {12, 16})
+    updated, _ = fix_content(source)
+    expected = (
+        ("b", "b", "b", "custom", "custom")
+        if global_import
+        else ("custom", "custom", "b", "custom", "b")
+    )
+    for content in (source, updated):
+        namespace: dict[str, object] = {}
+        exec(compile(content, "<class-lookups>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == expected
+
+
+@pytest.mark.parametrize("scope", ["module", "function", "class-global", "class-nonlocal"])
+@pytest.mark.parametrize(
+    "cleanup",
+    ["os = object()\ndel os", "try:\n    raise ValueError\nexcept ValueError as os:\n    pass"],
+)
+def test_other_scope_deletions_do_not_restore_imports(scope: str, cleanup: str) -> None:
+    body = (
+        cleanup
+        + "\ntry:\n    value = os.path.basename('a/b')\nexcept NameError:\n    value = 'deleted'\n"
+    )
+    source = "import os\n"
+    if scope == "module":
+        source += body + "result = value\n"
+    elif scope == "function":
+        source += "def check():\n" + indent(body + "return value\n", "    ")
+        source += "result = check()\n"
+    elif scope == "class-global":
+        source += "class Example:\n    global os\n" + indent(body, "    ")
+        source += "result = Example.value\n"
+    else:
+        source += "def outer():\n    import os\n    class Example:\n        nonlocal os\n"
+        source += indent(body, "        ")
+        source += "    return Example.value\nresult = outer()\n"
+    assert offenses(source) == {}
+    assert fix_content(source) == (source, 0)
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<deleted-binding>", "exec", dont_inherit=True), namespace)
+    assert namespace["result"] == "deleted"
+
+
 def test_class_import_does_not_escape_into_methods() -> None:
     source = """
         class Example:
