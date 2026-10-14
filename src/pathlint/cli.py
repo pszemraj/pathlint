@@ -294,11 +294,14 @@ def _fix(
                 fromfile=label,
                 tofile=f"{label} (fixed)",
             ):
+                terminated = line.endswith(("\r", "\n"))
                 line = line.rstrip("\r\n")
                 if color and line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
                     ansi = "92" if line.startswith("+") else "91"
                     line = f"\033[{ansi}m{line}\033[0m"
                 print(line)
+                if not terminated:
+                    print("\\ No newline at end of file")
         elif not quiet:
             print(f"Fixed {label}: {count} replacements.")
     _print_errors(errors)

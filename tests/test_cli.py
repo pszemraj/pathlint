@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import json
 import os
+import shutil
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError
@@ -534,6 +535,34 @@ def test_fix_crlf_preview_has_clean_lines_and_preserves_file_newlines(
     updated = path.read_bytes()
     assert b"\r\n" in updated
     assert b"\n" not in updated.replace(b"\r\n", b"")
+
+
+@pytest.mark.parametrize("suffix, markers", [("", 2), ("\n", 0), ("\n# tail", 1)])
+def test_preview_preserves_final_newline_information(
+    workspace: Path, suffix: str, markers: int
+) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("Git is required to apply preview patches")
+    source = "import os\nvalue = os.path.exists('example')" + suffix
+    path = write_file(workspace, "sample.py", source)
+    original = path.read_bytes()
+    preview = invoke(workspace, "fix", "sample.py", "--dry-run", "--quiet")
+    assert preview.returncode == 1
+    assert preview.stderr == ""
+    assert path.read_bytes() == original
+    assert preview.stdout.count("\\ No newline at end of file\n") == markers
+    patch = preview.stdout.replace("+++ sample.py (fixed)\n", "+++ sample.py\n", 1)
+    applied = subprocess.run(
+        ["git", "apply", "--no-index", "-p0", "-"],
+        cwd=workspace,
+        input=patch.encode(),
+        capture_output=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    expected = "import os\nfrom pathlib import Path\nvalue = Path('example').exists()" + suffix
+    assert path.read_bytes() == expected.encode()
+    assert invoke(workspace, "fix", "sample.py", "--dry-run", "--quiet").returncode == 0
 
 
 @pytest.mark.parametrize("clean", [False, True])
