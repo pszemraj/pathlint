@@ -2710,6 +2710,21 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
 
 
 @pytest.mark.parametrize(
+    "annotation",
+    [
+        "os.path.basename: object\n",
+        "def annotate():\n    os.path.basename: object\nannotate()\n",
+    ],
+)
+def test_attribute_annotation_without_value_does_not_write(annotation: str) -> None:
+    """An annotation-only attribute target must not veto a safe subsequent fix."""
+    source = "import os\n" + annotation + "result = os.path.basename('a/b')\n"
+    updated, count = fix_content(source)
+    assert count == 1
+    assert run(updated) == run(source) == "b"
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         "paths.Path = lambda value: None",

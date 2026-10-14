@@ -3,143 +3,28 @@
 from __future__ import annotations
 
 import ast
-from collections import defaultdict
 from pathlib import Path
 
 from pathlint._source import physical_lines
+from pathlint.bindings import _ScopeNames, declaration_name
+from pathlint.mutations import MutationCollector
 
 
-class _ScopeNames(ast.NodeVisitor):
-    """Collect local bindings without descending into nested scopes."""
-
-    def __init__(self) -> None:
-        """Initialize the sets of local and explicitly external names."""
-        self.names: set[str] = set()
-        self.external: set[str] = set()
-        self.globals: set[str] = set()
-        self.imports: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        """Collect names assigned or deleted in the current scope."""
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.names.add(node.id)
-
-    def visit_arg(self, node: ast.arg) -> None:
-        """Collect a function parameter as a local binding."""
-        self.names.add(node.arg)
-
-    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
-        """Collect binding names introduced by either import syntax."""
-        names = {
-            alias.asname
-            or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name)
-            for alias in node.names
-        }
-        self.names.update(names)
-        self.imports.update(names)
-
-    visit_ImportFrom = visit_Import
-
-    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        """Collect function bindings and enclosing expressions without entering its body.
-
-        :param ast.FunctionDef | ast.AsyncFunctionDef node: Function definition to inspect.
-        """
-        self.names.add(node.name)
-        for expression in (
-            *node.decorator_list,
-            *node.args.defaults,
-            *node.args.kw_defaults,
-            node.returns,
-        ):
-            if expression:
-                self.visit(expression)
-        for argument in (
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-            node.args.vararg,
-            node.args.kwarg,
-        ):
-            if argument and argument.annotation:
-                self.visit(argument.annotation)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Collect class bindings and enclosing expressions without entering its body.
-
-        :param ast.ClassDef node: Class definition to inspect.
-        """
-        self.names.add(node.name)
-        for expression in (*node.decorator_list, *node.bases, *node.keywords):
-            self.visit(expression)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        """Visit lambda defaults without collecting its parameters or body."""
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default:
-                self.visit(default)
-
-    def visit_ListComp(
-        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
-    ) -> None:
-        """Visit comprehension expressions without collecting generator targets."""
-        for generator in node.generators:
-            self.visit(generator.iter)
-            for condition in generator.ifs:
-                self.visit(condition)
-        if isinstance(node, ast.DictComp):
-            self.visit(node.key)
-            self.visit(node.value)
-        else:
-            self.visit(node.elt)
-
-    visit_SetComp = visit_ListComp
-    visit_DictComp = visit_ListComp
-    visit_GeneratorExp = visit_ListComp
-
-    def visit_Global(self, node: ast.Global) -> None:
-        """Record names that must resolve against the module namespace."""
-        self.external.update(node.names)
-        self.globals.update(node.names)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        """Record names that resolve against an enclosing function namespace."""
-        self.external.update(node.names)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        """Collect an exception alias and bindings within the handler."""
-        if node.name:
-            self.names.add(node.name)
-        self.generic_visit(node)
-
-    def visit_MatchAs(self, node: ast.AST) -> None:
-        """Collect named or mapping-rest captures and visit nested patterns."""
-        name = getattr(node, "name", None) or getattr(node, "rest", None)
-        if name:
-            self.names.add(name)
-        self.generic_visit(node)
-
-    visit_MatchStar = visit_MatchAs
-    visit_MatchMapping = visit_MatchAs
-
-
-class OSPathDetector(ast.NodeVisitor):
+class OSPathDetector(MutationCollector):
     """Find os.path usage while respecting import aliases and local shadowing."""
 
     _use_literal_conditions = True
 
-    def __init__(self) -> None:
-        """Initialize lexical bindings and offending line numbers."""
+    def __init__(self, mutations: MutationCollector | None = None) -> None:
+        """Initialize lexical bindings, optionally reusing collected mutation facts.
+
+        :param MutationCollector | None mutations: Completed mutation facts for a fixing pass.
+        """
+        super().__init__(mutations)
         self.offenses: set[int] = set()
         self.scopes: list[dict[str, str | None]] = [{}]
         self.scope_kinds = ["module"]
         self.scope_globals: list[set[str]] = [set()]
-        self.mutated_attributes: set[str] = set()
-        self.escaped_origins: set[str] = set()
-        self.import_origins: dict[str, set[str]] = defaultdict(set)
-        self.mutation_aliases: dict[str, set[str]] = defaultdict(set)
         self.deferred: list[
             tuple[
                 ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp,
@@ -226,146 +111,6 @@ class OSPathDetector(ast.NodeVisitor):
     def _record(self, node: ast.Import | ast.ImportFrom | ast.Name | ast.Attribute) -> None:
         """Record the source line number of an offending node."""
         self.offenses.add(node.lineno)
-
-    def _mutation_origins(self, node: ast.AST) -> set[str]:
-        """Retain possible import origins for writes without reviving read bindings.
-
-        :param ast.AST node: Attribute target or its base expression.
-        :return set[str]: Previously imported spellings that the target may mutate.
-        """
-        if isinstance(node, ast.Name):
-            if not isinstance(node.ctx, ast.Load):
-                return set()
-            return self.import_origins.get(node.id, set()) | self.mutation_aliases.get(
-                node.id, set()
-            )
-        if isinstance(node, ast.Attribute):
-            return {f"{origin}.{node.attr}" for origin in self._mutation_origins(node.value)}
-        if isinstance(node, ast.Call):
-            # Calls may return their inputs; invoking an imported callable does
-            # not itself copy that callable. Return types are not inferred.
-            return set().union(
-                *(self._mutation_origins(value) for value in [*node.args, *node.keywords])
-            )
-        # Expressions can retain or return their referenced objects. Do not use
-        # their syntax to prove that an imported namespace cannot be copied.
-        return set().union(*(self._mutation_origins(child) for child in ast.iter_child_nodes(node)))
-
-    def _collect_mutation_aliases(self, node: ast.Module) -> None:
-        """Collect possible copies before visiting deferred writers, without binding reads.
-
-        :param ast.Module node: Module containing imports and assignment copies.
-        """
-        copies: list[tuple[ast.AST | None, ast.AST]] = []
-        for child in ast.walk(node):
-            if isinstance(child, ast.Import):
-                for alias in child.names:
-                    name = alias.asname or alias.name.split(".")[0]
-                    origin = alias.name if alias.asname else alias.name.split(".")[0]
-                    self.mutation_aliases[name].add(origin)
-            elif isinstance(child, ast.ImportFrom) and child.module and not child.level:
-                for alias in child.names:
-                    self.mutation_aliases[alias.asname or alias.name].add(
-                        f"{child.module}.{alias.name}"
-                    )
-            elif isinstance(child, ast.Assign):
-                copies.extend((target, child.value) for target in child.targets)
-            elif (
-                isinstance(child, (ast.AnnAssign, ast.NamedExpr, ast.AugAssign))
-                and child.value is not None
-            ):
-                copies.append((child.target, child.value))
-            elif isinstance(child, (ast.For, ast.AsyncFor, ast.comprehension)):
-                copies.append((child.target, child.iter))
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                if isinstance(child, ast.Lambda):
-                    copies.append((None, child.body))
-                positional = [*child.args.posonlyargs, *child.args.args]
-                copies.extend(
-                    zip(
-                        positional[len(positional) - len(child.args.defaults) :],
-                        child.args.defaults,
-                    )
-                )
-                copies.extend(
-                    (argument, default)
-                    for argument, default in zip(child.args.kwonlyargs, child.args.kw_defaults)
-                    if default is not None
-                )
-            elif isinstance(child, ast.Call):
-                copies.extend((None, value) for value in [*child.args, *child.keywords])
-            elif (
-                isinstance(child, (ast.Return, ast.Yield, ast.YieldFrom))
-                and child.value is not None
-            ):
-                copies.append((None, child.value))
-            elif isinstance(child, ast.withitem):
-                copies.append((None, child.context_expr))
-            elif isinstance(child, getattr(ast, "Match", ())):
-                copies.append((None, child.subject))
-            elif isinstance(child, ast.ClassDef):
-                names = _ScopeNames()
-                for statement in child.body:
-                    names.visit(statement)
-                copies.append((None, child))
-                copies.extend((None, ast.Name(id=name, ctx=ast.Load())) for name in names.imports)
-        # Copies can cross deferred bodies in either declaration order. Retaining
-        # every possible origin deliberately sacrifices scope/order precision.
-        changed = True
-        while changed:
-            changed = False
-            for target, value in copies:
-                changed |= self._retain_mutation_alias(target, value)
-
-    def _retain_mutation_alias(self, target: ast.AST | None, value: ast.AST) -> bool:
-        """Retain bounded import origins for a direct or unpacked assignment copy.
-
-        :param ast.AST | None target: Assignment target or None when the copied value escapes.
-        :param ast.AST value: Expression copied into the target.
-        :return bool: Whether any possible mutation origin was added.
-        """
-        if isinstance(target, ast.Starred):
-            return self._retain_mutation_alias(target.value, value)
-        if target is None or isinstance(target, (ast.Name, ast.arg, ast.Attribute, ast.Subscript)):
-            origins = set()
-            for origin in self._mutation_origins(value):
-                if origin == "os":
-                    origins.add(origin)
-                elif origin == "os.path" or origin.startswith("os.path."):
-                    origins.add(".".join(origin.split(".")[:3]))
-                elif origin == "pathlib" or origin.startswith("pathlib."):
-                    origins.add(".".join(origin.split(".")[:2]))
-            # Collapse copied callable internals to their exported parent. This
-            # overapproximates mutations and prevents cyclic copies growing paths.
-            if target is None or isinstance(target, (ast.Attribute, ast.Subscript)):
-                # Escaping objects can be written through unmodeled aliases.
-                # Exclude fixes without changing the detector's read bindings.
-                before = len(self.escaped_origins)
-                self.escaped_origins.update(
-                    "os.path" if origin == "os" else origin for origin in origins
-                )
-                return len(self.escaped_origins) != before
-            name = target.id if isinstance(target, ast.Name) else target.arg
-            before = len(self.mutation_aliases[name])
-            self.mutation_aliases[name].update(origins)
-            return len(self.mutation_aliases[name]) != before
-        changed = False
-        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
-            if len(target.elts) == len(value.elts) and not any(
-                isinstance(item, ast.Starred) for item in (*target.elts, *value.elts)
-            ):
-                for item, expression in zip(target.elts, value.elts):
-                    changed |= self._retain_mutation_alias(item, expression)
-            else:
-                # Starred unpacking can shift positions. Every literal element
-                # is a possible origin for each remaining assignment target.
-                for item in target.elts:
-                    for expression in value.elts:
-                        changed |= self._retain_mutation_alias(item, expression)
-        elif isinstance(target, (ast.Tuple, ast.List)):
-            for item in target.elts:
-                changed |= self._retain_mutation_alias(item, value)
-        return changed
 
     def visit_Import(self, node: ast.Import) -> None:
         """Bind imported modules and record direct os.path imports."""
@@ -462,22 +207,7 @@ class OSPathDetector(ast.NodeVisitor):
             and (origin == "os.path" or origin.startswith("os.path."))
         ):
             self._record(node)
-        self.generic_visit(node)
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self._invalidate_mutation(node)
-
-    def _invalidate_mutation(self, node: ast.Attribute) -> None:
-        """Invalidate possible imported origins affected by an attribute write.
-
-        :param ast.Attribute node: Assigned or deleted attribute target.
-        """
-        # Retain earlier origins conservatively for mutations, never ordinary reads.
-        for possible in self._mutation_origins(node):
-            if possible in {"os.__class__", "os.path.__class__", "pathlib.__class__"}:
-                # Module subclasses can override every attribute with descriptors.
-                self.mutated_attributes.add(possible.removesuffix(".__class__"))
-            elif possible == "os.path" or possible.startswith(("os.path.", "pathlib.")):
-                self.mutated_attributes.add(possible)
+        super().visit_Attribute(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Visit definition expressions and defer the body for lexical analysis."""
@@ -557,18 +287,6 @@ class OSPathDetector(ast.NodeVisitor):
         for target in node.targets:
             self.visit(target)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        """Visit the value and actual assignment before its annotation expression."""
-        if node.value:
-            self.visit(node.value)
-            self.visit(node.target)
-        elif isinstance(node.target, ast.Attribute):
-            self.visit(node.target.value)
-        elif isinstance(node.target, ast.Subscript):
-            self.visit(node.target.value)
-            self.visit(node.target.slice)
-        self.visit(node.annotation)
-
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         """Visit a named expression's value before updating its target binding."""
         self.visit(node.value)
@@ -641,7 +359,7 @@ class OSPathDetector(ast.NodeVisitor):
 
     def visit_MatchAs(self, node: ast.AST) -> None:
         """Shadow named or mapping-rest captures and visit nested patterns."""
-        name = getattr(node, "name", None) or getattr(node, "rest", None)
+        name = declaration_name(node)
         if name:
             self.scopes[-1][name] = None
         self.generic_visit(node)

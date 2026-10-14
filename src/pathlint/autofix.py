@@ -10,7 +10,9 @@ from io import StringIO
 from pathlib import PureWindowsPath
 
 from pathlint._source import physical_lines
-from pathlint.linter import OSPathDetector, _ScopeNames
+from pathlint.bindings import _ScopeNames
+from pathlint.linter import OSPathDetector
+from pathlint.mutations import MutationCollector
 
 METHODS = {
     "isabs": "is_absolute()",
@@ -86,13 +88,15 @@ class _PathFixer(OSPathDetector):
 
     _use_literal_conditions = False
 
-    def __init__(self, content: str, tree: ast.Module) -> None:
+    def __init__(self, content: str, tree: ast.Module, mutations: MutationCollector) -> None:
         """Initialize source edits and choose an unused pathlib constructor alias.
 
         :param str content: Original Python source to edit.
         :param ast.Module tree: Parsed module used to identify names and leading imports.
+        :param MutationCollector mutations: Collected import origins, escapes, and writes.
         """
-        super().__init__()
+        super().__init__(mutations)
+        self.mutated_attributes.update(self.escaped_origins)
         self.source = _Source(content)
         self.count = 0
         self.needs_import = False
@@ -127,6 +131,12 @@ class _PathFixer(OSPathDetector):
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and node.level
             for alias in node.names
+        )
+        # Late str imports and conflicting import origins invalidate deferred calls.
+        self.deferred_rebindings.update(
+            name
+            for name, origins in mutations.import_origins.items()
+            if len(origins) > 1 or name == "str"
         )
         # Explicit global writes can affect immediate calls after a deferred body
         # runs, including through nested functions or class suites.
@@ -732,17 +742,9 @@ def fix_content(content: str) -> tuple[str, int]:
     ):
         # Type parameters and lazy aliases use annotation scopes we do not analyze.
         return content, 0
-    detector = OSPathDetector()
-    detector.visit(tree)
-    fixer = _PathFixer(content, tree)
-    fixer.mutated_attributes.update(detector.mutated_attributes)
-    fixer.mutated_attributes.update(detector.escaped_origins)
-    # Late str imports can shadow conversions inserted into deferred bodies.
-    fixer.deferred_rebindings.update(
-        name
-        for name, origins in detector.import_origins.items()
-        if len(origins) > 1 or name == "str"
-    )
+    mutations = MutationCollector()
+    mutations.visit(tree)
+    fixer = _PathFixer(content, tree, mutations)
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))
     updated, import_count = _clean_imports(updated)
