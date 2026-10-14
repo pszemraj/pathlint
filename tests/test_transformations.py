@@ -992,6 +992,24 @@ def test_result_for_missing_path_is_false() -> None:
         "import os\n"
         "try:\n    raise ValueError()\n"
         "except Exception as Path:\n    result = os.path.isabs('missing')\n",
+        "from pathlib import Path\nimport os\ntry:\n    raise ValueError()\n"
+        "except ValueError as Path:\n    from pathlib import Path\n"
+        "result = os.path.basename('a/b')\n",
+        "from pathlib import Path as P\nimport os\ntry:\n    raise ValueError()\n"
+        "except ValueError as P:\n    from pathlib import Path as P\n"
+        "result = os.path.basename('a/b')\n",
+        "import pathlib\nimport os\ntry:\n    raise ValueError()\n"
+        "except ValueError as pathlib:\n    import pathlib\n"
+        "result = os.path.basename('a/b')\n",
+        pytest.param(
+            "from pathlib import Path\nimport os\ntry:\n"
+            "    raise ExceptionGroup('failure', [ValueError()])\n"
+            "except* ValueError as Path:\n    from pathlib import Path\n"
+            "result = os.path.basename('a/b')\n",
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 11), reason="Requires exception groups"
+            ),
+        ),
     ],
 )
 def test_generated_import_is_available_without_shadowing(source: str) -> None:

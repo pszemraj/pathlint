@@ -407,13 +407,15 @@ class OSPathDetector(ast.NodeVisitor):
             )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        """Visit the exception type, bind its alias, and traverse the handler."""
+        """Visit the exception type and suite, then clear the deleted exception alias."""
         if node.type:
             self.visit(node.type)
         if node.name:
             self.scopes[-1][node.name] = None
         for statement in node.body:
             self.visit(statement)
+        if node.name:
+            self.scopes[-1][node.name] = None
 
     def visit_MatchAs(self, node: ast.AST) -> None:
         """Shadow a named match capture and visit its nested pattern."""

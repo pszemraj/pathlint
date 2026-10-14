@@ -156,6 +156,8 @@ def test_only_actual_os_path_imports_are_resolved(source: str) -> None:
         "import os\nimport other as os\nos.path.exists('file')",
         "import os\ncallback = lambda os: os.path.exists('file')",
         "import os\ndef f():\n    try:\n        pass\n    except Exception as os:\n        os.path.exists('file')",
+        "import os\ntry:\n    raise ValueError()\nexcept ValueError as os:\n    import os\n"
+        "os.path.exists('file')",
     ],
 )
 def test_shadowed_os_names_are_not_resolved(source: str) -> None:
