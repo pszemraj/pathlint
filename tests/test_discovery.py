@@ -297,12 +297,28 @@ def test_git_execution_errors_are_reported(repo: Path, monkeypatch: pytest.Monke
     assert discover_files([repo]) == ([], [(repo, "Git executable is inaccessible")])
 
 
-def test_resolution_errors_are_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "error", [PermissionError("Path is inaccessible"), RuntimeError("Symlink loop")]
+)
+def test_resolution_errors_are_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
     def fail_resolve(self):
-        raise PermissionError("Path is inaccessible")
+        raise error
 
     monkeypatch.setattr(Path, "resolve", fail_resolve)
-    assert discover_files([tmp_path]) == ([], [(tmp_path, "Path is inaccessible")])
+    assert discover_files([tmp_path]) == ([], [(tmp_path, str(error))])
+
+
+def test_cyclic_symlink_input_does_not_discard_valid_files(tmp_path: Path) -> None:
+    wanted = write(tmp_path, "keep.py")
+    loop = tmp_path / "loop.py"
+    loop.symlink_to(loop)
+    files, errors = discover_files([loop, wanted])
+    assert files == [wanted]
+    assert len(errors) == 1
+    assert errors[0][0] == loop
+    assert "loop" in errors[0][1].lower()
 
 
 @pytest.mark.parametrize("pattern", ["alias.py", "./alias.py", "links/*.py"])

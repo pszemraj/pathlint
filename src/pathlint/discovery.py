@@ -198,7 +198,12 @@ def discover_files(
     for path in paths:
         try:
             alias = path.absolute()
-            path = path.resolve()
+            try:
+                path = path.resolve()
+            except RuntimeError as error:
+                # Python 3.9-3.12 report symbolic-link loops as RuntimeError.
+                errors.append((path, str(error)))
+                continue
             if not path.exists():
                 errors.append((path, "Path does not exist"))
             elif path.is_file():
