@@ -454,6 +454,120 @@ def test_git_subdirectory_warnings_use_worktree_paths(
             directory.chmod(0o755)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="File permissions require Unix")
+@pytest.mark.parametrize("subdirectory", [False, True])
+def test_unreadable_gitignores_honor_directory_exclusions(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, subdirectory: bool
+) -> None:
+    scan_root = repo / "src" if subdirectory else repo
+    wanted = write(scan_root, "keep.py")
+    vendor_file = write(scan_root, "vendor/hidden.py")
+    write(scan_root, "build/hidden.py")
+    ignores = [scan_root / name / ".gitignore" for name in ("vendor", "build")]
+    for ignore in ignores:
+        ignore.write_text("hidden.py\n", encoding="utf-8")
+        ignore.chmod(0)
+    try:
+        if any(os.access(ignore, os.R_OK) for ignore in ignores):
+            pytest.skip("Current user bypasses file permissions")
+        files, errors = discover_files([scan_root], exclude_patterns=(".gitignore",))
+        assert files == sorted([wanted, vendor_file])
+        assert len(errors) == 1
+        assert "vendor/.gitignore" in errors[0][1]
+        assert "build/.gitignore" not in errors[0][1]
+        _, errors = discover_files([scan_root], default_excludes=())
+        assert "build/.gitignore" in errors[0][1]
+        relative = (scan_root / "vendor").relative_to(repo).as_posix()
+        for pattern in ("vendor", relative + "/", "./" + relative, str(ignores[0].parent)):
+            assert discover_files([scan_root], exclude_patterns=(pattern,)) == ([wanted], [])
+
+        alias = repo.parent / "alias"
+        alias.symlink_to(scan_root, target_is_directory=True)
+        monkeypatch.chdir(repo.parent)
+        assert discover_files([alias], exclude_patterns=("alias/vendor/",)) == ([wanted], [])
+    finally:
+        for ignore in ignores:
+            ignore.chmod(0o644)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="File permissions require Unix")
+@pytest.mark.parametrize(
+    "metadata_name", [".gitignore", "src/.gitignore", ".git/info/exclude", "global/.gitignore"]
+)
+def test_unreadable_selected_git_metadata_remains_an_error(repo: Path, metadata_name: str) -> None:
+    wanted = write(repo, "src/keep.py")
+    metadata = write(repo, metadata_name)
+    metadata.write_text("keep.py\n", encoding="utf-8")
+    if metadata_name.startswith("global/"):
+        git(repo, "config", "core.excludesFile", str(metadata))
+    excluded_ignore = write(repo, "src/vendor/.gitignore")
+    excluded_ignore.chmod(0)
+    metadata.chmod(0)
+    try:
+        if os.access(metadata, os.R_OK):
+            pytest.skip("Current user bypasses file permissions")
+        files, errors = discover_files([repo / "src"], exclude_patterns=(".gitignore", "vendor"))
+        assert files == [wanted]
+        assert len(errors) == 1
+        assert errors[0][0] == repo / "src"
+        assert "Permission denied" in errors[0][1]
+        assert "src/vendor/.gitignore" not in errors[0][1]
+    finally:
+        metadata.chmod(0o644)
+        excluded_ignore.chmod(0o644)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="File permissions require Unix")
+@pytest.mark.parametrize("global_role", ["relative", "absolute", "cyclic", "config-error"])
+def test_excluded_gitignore_with_global_role_remains_an_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, global_role: str
+) -> None:
+    wanted = write(repo, "keep.py")
+    ignore = write(repo, "vendor/.gitignore")
+    ignore.write_text("keep.py\n", encoding="utf-8")
+    configured = ignore if global_role == "absolute" else ignore.relative_to(repo)
+    if global_role == "cyclic":
+        configured = ignore.parent / "global-loop"
+        configured.symlink_to(configured)
+    git(repo, "config", "core.excludesFile", str(configured))
+    if global_role == "config-error":
+        original_run = subprocess.run
+
+        def fail_config(args, **kwargs):
+            if "core.excludesFile" in args:
+                return subprocess.CompletedProcess(args, 2, b"", b"cannot read config\n")
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr("pathlint.discovery.subprocess.run", fail_config)
+    ignore.chmod(0)
+    try:
+        if os.access(ignore, os.R_OK):
+            pytest.skip("Current user bypasses file permissions")
+        files, errors = discover_files([repo], exclude_patterns=("vendor",))
+        assert files == [wanted]
+        assert len(errors) == 1
+        assert "vendor/.gitignore" in errors[0][1]
+        assert "Permission denied" in errors[0][1]
+    finally:
+        ignore.chmod(0o644)
+
+
+def test_warning_free_discovery_does_not_read_global_ignore_config(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wanted = write(repo, "keep.py")
+    original_run = subprocess.run
+    commands = []
+
+    def record_run(args, **kwargs):
+        commands.append(args)
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr("pathlint.discovery.subprocess.run", record_run)
+    assert discover_files([repo]) == ([wanted], [])
+    assert all("core.excludesFile" not in command for command in commands)
+
+
 def test_successful_git_listing_preserves_other_stderr(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

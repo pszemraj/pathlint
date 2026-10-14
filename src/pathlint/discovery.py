@@ -198,6 +198,45 @@ def discover_files(
                         if not excluded(candidate, candidate_alias, directory=True):
                             errors.append((candidate, warning[0].decode(errors="replace").strip()))
                     remaining = re.sub(directory_warning, b"", listing.stderr, flags=re.DOTALL)
+                    ignore_warning = rb"warning: unable to access '(.*?)': [^\n]*\n"
+                    global_ignore_config = None
+                    for warning in re.finditer(ignore_warning, remaining, re.DOTALL):
+                        candidate = worktree_root / os.fsdecode(warning[1])
+                        if candidate.name != ".gitignore":
+                            continue
+                        try:
+                            candidate_alias = alias / candidate.relative_to(root)
+                        except ValueError:
+                            continue
+                        if not excluded(candidate.parent, candidate_alias.parent, directory=True):
+                            continue
+                        if global_ignore_config is None:
+                            global_ignore_config = subprocess.run(
+                                [
+                                    git,
+                                    "-C",
+                                    str(root),
+                                    "config",
+                                    "--path",
+                                    "--null",
+                                    "--get",
+                                    "core.excludesFile",
+                                ],
+                                capture_output=True,
+                                check=False,
+                            )
+                        if global_ignore_config.returncode == 0:
+                            global_ignore = worktree_root / os.fsdecode(
+                                global_ignore_config.stdout.removesuffix(b"\0")
+                            )
+                            try:
+                                if candidate.resolve() == global_ignore.resolve():
+                                    continue
+                            except (OSError, RuntimeError):
+                                continue
+                        elif global_ignore_config.returncode != 1:
+                            continue
+                        remaining = remaining.replace(warning[0], b"")
                     if remaining.strip():
                         errors.append((root, remaining.decode(errors="replace").strip()))
                     for item in listing.stdout.split(b"\0"):
