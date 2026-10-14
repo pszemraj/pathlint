@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 from pathlint._source import physical_lines
-from pathlint.bindings import _ScopeNames, declaration_name
+from pathlint.bindings import _ScopeNames, declaration_name, import_binding
 from pathlint.mutations import MutationCollector
 
 
@@ -112,33 +112,23 @@ class OSPathDetector(MutationCollector):
         """Record the source line number of an offending node."""
         self.offenses.add(node.lineno)
 
-    def visit_Import(self, node: ast.Import) -> None:
-        """Bind imported modules and record direct os.path imports."""
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        """Bind imported names, invalidate wildcard bindings, and record os.path imports."""
         for alias in node.names:
-            name = alias.asname or alias.name.split(".")[0]
-            origin = alias.name if alias.asname else alias.name.split(".")[0]
-            self.scopes[-1][name] = origin
-            self.import_origins[name].add(origin)
-            if alias.name == "os.path" or alias.name.startswith("os.path."):
-                self._record(node)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Bind from-import aliases and record absolute os.path imports."""
-        for alias in node.names:
-            origin = f"{node.module}.{alias.name}" if node.module and not node.level else None
+            name, origin = import_binding(node, alias)
             if alias.name == "*":
                 # Unknown exports can replace any binding in this namespace.
                 # Update in place so deferred bodies see the invalidation too.
                 self.scopes[-1].update(dict.fromkeys(self.scopes[-1]))
-                if origin and origin.startswith("os.path."):
-                    self._record(node)
-                continue
-            name = alias.asname or alias.name
-            self.scopes[-1][name] = origin
-            if origin:
-                self.import_origins[name].add(origin)
-            if origin and (origin == "os.path" or origin.startswith("os.path.")):
+            else:
+                self.scopes[-1][name] = origin
+                if origin:
+                    self.import_origins[name].add(origin)
+            imported = alias.name if isinstance(node, ast.Import) else origin
+            if imported and (imported == "os.path" or imported.startswith("os.path.")):
                 self._record(node)
+
+    visit_ImportFrom = visit_Import
 
     def visit_Name(self, node: ast.Name) -> None:
         """Record loaded os.path aliases or shadow names assigned or deleted."""

@@ -5,6 +5,15 @@ from __future__ import annotations
 import ast
 
 
+def import_binding(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> tuple[str, str | None]:
+    """Return the local binding and absolute origin introduced by an import alias."""
+    if isinstance(node, ast.Import):
+        name = alias.asname or alias.name.split(".")[0]
+        return name, alias.name if alias.asname else name
+    origin = f"{node.module}.{alias.name}" if node.module and not node.level else None
+    return alias.asname or alias.name, origin
+
+
 def declaration_name(node: ast.AST) -> str | None:
     """Return a definition, exception alias, or pattern capture name."""
     if isinstance(
@@ -35,11 +44,7 @@ class _ScopeNames(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         """Collect binding names introduced by either import syntax."""
-        names = {
-            alias.asname
-            or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name)
-            for alias in node.names
-        }
+        names = {import_binding(node, alias)[0] for alias in node.names}
         self.names.update(names)
         self.imports.update(names)
 

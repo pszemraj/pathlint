@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 
-from pathlint.bindings import _ScopeNames
+from pathlint.bindings import _ScopeNames, import_binding
 
 
 class MutationCollector(ast.NodeVisitor):
@@ -34,21 +34,14 @@ class MutationCollector(ast.NodeVisitor):
         self._collect_mutation_aliases(node)
         self.generic_visit(node)
 
-    def visit_Import(self, node: ast.Import) -> None:
-        """Retain all origins introduced by ordinary module imports."""
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        """Retain named absolute import origins without inventing wildcard exports."""
         for alias in node.names:
-            name = alias.asname or alias.name.split(".")[0]
-            origin = alias.name if alias.asname else alias.name.split(".")[0]
-            self.import_origins[name].add(origin)
+            name, origin = import_binding(node, alias)
+            if origin and alias.name != "*":
+                self.import_origins[name].add(origin)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Retain named absolute imports without inventing wildcard exports."""
-        if node.module and not node.level:
-            for alias in node.names:
-                if alias.name != "*":
-                    self.import_origins[alias.asname or alias.name].add(
-                        f"{node.module}.{alias.name}"
-                    )
+    visit_ImportFrom = visit_Import
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """Collect writes after visiting the attribute base expression."""
@@ -101,16 +94,11 @@ class MutationCollector(ast.NodeVisitor):
             return
         copies: list[tuple[ast.AST | None, ast.AST]] = []
         for child in ast.walk(node):
-            if isinstance(child, ast.Import):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
                 for alias in child.names:
-                    name = alias.asname or alias.name.split(".")[0]
-                    origin = alias.name if alias.asname else alias.name.split(".")[0]
-                    self.mutation_aliases[name].add(origin)
-            elif isinstance(child, ast.ImportFrom) and child.module and not child.level:
-                for alias in child.names:
-                    self.mutation_aliases[alias.asname or alias.name].add(
-                        f"{child.module}.{alias.name}"
-                    )
+                    name, origin = import_binding(child, alias)
+                    if origin:
+                        self.mutation_aliases[name].add(origin)
             elif isinstance(child, ast.Assign):
                 copies.extend((target, child.value) for target in child.targets)
             elif (

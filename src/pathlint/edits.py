@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 
 from pathlint._source import _Source, is_docstring, physical_lines
-from pathlint.bindings import _ScopeNames
+from pathlint.bindings import _ScopeNames, import_binding
 
 
 def _skip_semicolon(
@@ -224,9 +224,7 @@ def _clean_imports(content: str) -> tuple[str, int]:
         node_count = 0
         remaining = []
         for alias in node.names:
-            name = alias.asname or (
-                alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name
-            )
+            name, _ = import_binding(node, alias)
             if isinstance(node, ast.Import):
                 if (
                     alias.name == "os.path"

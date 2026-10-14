@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import PureWindowsPath
 
 from pathlint._source import _Source, is_docstring
-from pathlint.bindings import _ScopeNames, declaration_name
+from pathlint.bindings import _ScopeNames, declaration_name, import_binding
 from pathlint.edits import _clean_imports, _insert_import, _references_namespace
 from pathlint.linter import OSPathDetector
 from pathlint.mutations import MutationCollector
@@ -77,7 +77,7 @@ class _PathFixer(OSPathDetector):
             elif isinstance(node, ast.arg):
                 names.add(node.arg)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+                names.update(import_binding(node, alias)[0] for alias in node.names)
                 if isinstance(node, ast.ImportFrom) and node.level:
                     self.deferred_rebindings.update(
                         alias.asname or alias.name for alias in node.names
@@ -102,9 +102,7 @@ class _PathFixer(OSPathDetector):
                 continue
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 break
-            self.leading_aliases.update(
-                alias.asname or alias.name.split(".")[0] for alias in node.names
-            )
+            self.leading_aliases.update(import_binding(node, alias)[0] for alias in node.names)
         self.path_name = "_Path"
         while self.path_name in names:
             self.path_name += "_"
