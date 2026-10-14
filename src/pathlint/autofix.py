@@ -384,6 +384,13 @@ class _PathFixer(OSPathDetector):
                 return
         elif function not in METHODS or len(node.args) != 1:
             return
+        if (
+            function == "isabs"
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value.startswith(("/", "\\"))
+        ):
+            # Older Windows os.path accepts roots without drives; pathlib does not.
+            return
         if function in {"join", "dirname", "expanduser"} and (
             any("str" in scope for scope in self.scopes)
             or ("generator" in self.scope_kinds and "str" in self.deferred_rebindings)

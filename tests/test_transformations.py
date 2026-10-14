@@ -1,10 +1,11 @@
 """Behavioral regressions for AST-backed, source-preserving transformations."""
 
 import ast
+import ntpath
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from textwrap import indent
 from types import ModuleType
 
@@ -25,6 +26,7 @@ def run(source: str) -> object:
     ("imports", "expression"),
     [
         ("import os", "os.path.isabs(FILE)"),
+        ("import os", "os.path.isabs('C:/directory/file')"),
         ("import os as operating_system", "operating_system.path.isabs(FILE)"),
         ("import os.path as paths", "paths.isabs(FILE)"),
         ("from os import path as paths", "paths.isabs(FILE)"),
@@ -45,10 +47,8 @@ def run(source: str) -> object:
         ("import os", "(\n    (os.path.basename)  # callable (comment\n    ('directory/file')\n)"),
     ],
 )
-def test_supported_calls_preserve_results(tmp_path: Path, imports: str, expression: str) -> None:
-    target = tmp_path / "file"
-    target.write_text("content", encoding="utf-8")
-    original = imports + "\nresult = " + expression.replace("FILE", repr(str(target))) + "\n"
+def test_supported_calls_preserve_results(imports: str, expression: str) -> None:
+    original = imports + "\nresult = " + expression.replace("FILE", "'directory/file'") + "\n"
     updated, count = fix_content(original)
     assert count > 0
     assert run(updated) == run(original)
@@ -79,6 +79,17 @@ def test_supported_calls_preserve_results(tmp_path: Path, imports: str, expressi
 def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> None:
     original = f"import os\nresult = {expression}\n"
     assert fix_content(original) == (original, 0)
+
+
+@pytest.mark.parametrize("value", ["/file", "\\file", "//server"])
+def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
+    """Keep roots whose Windows interpretation differs on supported Python versions."""
+    original = f"import os\nresult = os.path.isabs({value!r})\n"
+    assert fix_content(original) == (original, 0)
+    if sys.version_info < (3, 13):
+        assert ntpath.isabs(value)
+        assert not PureWindowsPath(value).is_absolute()
+    assert run(fix_content(original)[0]) == run(original)
 
 
 @pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])
@@ -260,13 +271,13 @@ def test_abspath_is_not_replaced_by_symlink_resolution(tmp_path: Path) -> None:
     assert alias.resolve() != alias
 
 
-def test_strings_comments_and_fstring_text_survive(tmp_path: Path) -> None:
+def test_strings_comments_and_fstring_text_survive() -> None:
     original = (
         '"""os.path.isabs("docstring")"""\n'
         "import os.path\n"
         "# os.path.isabs('comment')\n"
         "literal = \"os.path.isabs('literal')\"\n"
-        f"result = f\"os.path.isabs('text'): {{os.path.isabs({str(tmp_path)!r})}}\"\n"
+        "result = f\"os.path.isabs('text'): {os.path.isabs('directory/file')}\"\n"
     )
     updated, count = fix_content(original)
     assert count > 0
@@ -367,7 +378,7 @@ def test_unicode_offsets_and_multiline_comments(
     original = (
         f'"""Module {separator} documentation."""\n'
         "import os.path\n"
-        f"label = '🐍{separator}';\fresult = os.path.isabs(\n    {str(tmp_path)!r},  # keep this comment\n)\n"
+        f"label = '🐍{separator}';\fresult = os.path.isabs(\n    'directory/file',  # keep this comment\n)\n"
     ).replace("\n", newline)
     updated, count = fix_content(original)
     assert count > 0
@@ -386,14 +397,14 @@ def test_unicode_offsets_and_multiline_comments(
     ]
 
 
-def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:
+def test_parenthesized_callable_comments_are_preserved() -> None:
     original = (
         "import os.path as osp\n"
         "result = (\n"
         "    (  # before callable 🐍 (\n"
         "        osp.isabs\n"
         "    )  # after callable (\n"
-        f"    ({str(tmp_path)!r})\n"
+        "    ('directory/file')\n"
         ")\n"
     )
     updated, count = fix_content(original)
@@ -403,12 +414,12 @@ def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:
     assert run(updated) == run(original)
 
 
-def test_import_follows_docstring_and_future_import(tmp_path: Path) -> None:
+def test_import_follows_docstring_and_future_import() -> None:
     original = (
         '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation.\n@literal\n"""\n'
         "from __future__ import annotations\n"
         "import os.path\n"
-        f"result = os.path.isabs({str(tmp_path)!r})\n"
+        "result = os.path.isabs('directory/file')\n"
     )
     updated, _ = fix_content(original)
     assert updated.startswith(
@@ -469,10 +480,10 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
     assert run(persisted) == run(source) == "b"
 
 
-def test_partial_named_import_keeps_unsupported_function(tmp_path: Path) -> None:
+def test_partial_named_import_keeps_unsupported_function() -> None:
     original = (
         "from os.path import isabs as present, splitext\n"
-        f"result = (present({str(tmp_path)!r}), splitext('dir/file.ext'))\n"
+        "result = (present('directory/file'), splitext('dir/file.ext'))\n"
     )
     updated, count = fix_content(original)
     assert count == 2
@@ -485,10 +496,10 @@ def test_wildcard_import_is_not_deleted() -> None:
     assert fix_content(original) == (original, 0)
 
 
-def test_multiline_import_comments_are_preserved(tmp_path: Path) -> None:
+def test_multiline_import_comments_are_preserved() -> None:
     original = (
         "from os.path import (\n    isabs,  # important comment\n)\n"
-        f"result = isabs({str(tmp_path)!r})\n"
+        "result = isabs('directory/file')\n"
     )
     updated, count = fix_content(original)
     assert count == 1
@@ -504,11 +515,11 @@ def test_multiline_import_comments_are_preserved(tmp_path: Path) -> None:
         "from pathlib import Path\n",
     ],
 )
-def test_constructor_does_not_collide_with_local_names(tmp_path: Path, preamble: str) -> None:
+def test_constructor_does_not_collide_with_local_names(preamble: str) -> None:
     original = (
         preamble + "import os\n"
         "def check(Path):\n"
-        f"    return os.path.isabs({str(tmp_path)!r})\n"
+        "    return os.path.isabs('directory/file')\n"
         "result = check(object())\n"
     )
     updated, count = fix_content(original)
