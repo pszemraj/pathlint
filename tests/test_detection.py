@@ -156,6 +156,88 @@ def test_nested_external_declaration_selects_its_namespace(
         assert namespace["result"] == (False if uses_import else "custom")
 
 
+@pytest.mark.parametrize("declaration", ["global", "nonlocal"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "os = custom",
+        "if False:\n    import os",
+        "if True:\n    os = custom\nelse:\n    import os",
+        "try:\n    os = custom\n    raise ValueError\n    import os\nexcept ValueError:\n    pass",
+        "def os():\n    pass\nos.path = custom.path",
+        "class os:\n    path = custom.path",
+    ],
+)
+def test_immediate_class_external_writes_invalidate_owner(declaration: str, statement: str) -> None:
+    source = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+    )
+    body = (
+        "os = custom\n"
+        "class C:\n"
+        f"    {declaration} os\n"
+        + "\n".join("    " + line for line in statement.splitlines())
+        + "\nresult = os.path.exists('unlikely-name')\n"
+    )
+    if declaration == "nonlocal":
+        body = (
+            "def outer():\n"
+            + "\n".join("    " + line for line in body.splitlines())
+            + "\n    return result\nresult = outer()\n"
+        )
+    source += body
+    updated, count = fix_content(source)
+    assert count == 0
+    assert offenses(source) == {}
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == "custom"
+
+
+@pytest.mark.parametrize("declaration", ["global", "nonlocal"])
+@pytest.mark.parametrize("statement", ["os = custom", "del os"])
+def test_class_external_write_does_not_leave_import_visible(
+    declaration: str, statement: str
+) -> None:
+    source = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+    )
+    body = (
+        "import os\n"
+        "class C:\n"
+        f"    {declaration} os\n"
+        f"    {statement}\n"
+        "    class Nested:\n"
+        "        try:\n"
+        "            result = os.path.exists('unlikely-name')\n"
+        "        except NameError:\n"
+        "            result = 'deleted'\n"
+        "try:\n"
+        "    later = os.path.exists('unlikely-name')\n"
+        "except NameError:\n"
+        "    later = 'deleted'\n"
+        "result = (C.Nested.result, later)\n"
+    )
+    if declaration == "nonlocal":
+        body = (
+            "def outer():\n"
+            + "\n".join("    " + line for line in body.splitlines())
+            + "\n    return result\nresult = outer()\n"
+        )
+    source += body
+    updated, count = fix_content(source)
+    assert count == 0
+    assert offenses(source) == {}
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
+        expected = "deleted" if statement == "del os" else "custom"
+        assert namespace["result"] == (expected, expected)
+
+
 def test_class_assignment_does_not_shadow_global_inside_methods() -> None:
     source = """
         import os

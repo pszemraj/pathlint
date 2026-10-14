@@ -323,11 +323,21 @@ class OSPathDetector(ast.NodeVisitor):
         """Visit class definition expressions and the body in its own scope."""
         for expression in (*node.decorator_list, *node.bases, *node.keywords):
             self.visit(expression)
-        self.scopes.append({})
-        self.scope_kinds.append("class")
         names = _ScopeNames()
         for statement in node.body:
             names.visit(statement)
+        # Class suites execute immediately. External writes can occur on any branch;
+        # invalidate the owner rather than reviving an import from an untaken branch.
+        for name in names.names & names.external:
+            if name in names.globals:
+                self.scopes[0][name] = None
+            else:
+                for scope, kind in reversed(list(zip(self.scopes, self.scope_kinds))):
+                    if kind == "function" and name in scope:
+                        scope[name] = None
+                        break
+        self.scopes.append({})
+        self.scope_kinds.append("class")
         self.scope_globals.append(names.globals)
         for statement in node.body:
             self.visit(statement)
