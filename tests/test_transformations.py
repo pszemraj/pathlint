@@ -89,6 +89,7 @@ def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> N
         "os.path.isfile('')",
         "os.path.exists(0)",
         "os.path.isfile(0)",
+        "os.path.isdir(0)",
         "os.path.exists(-1)",
         "os.path.expanduser('')",
         "os.path.expanduser('directory/')",
