@@ -123,6 +123,20 @@ def test_patterns_are_case_sensitive_and_have_no_negation(
     assert discover_files([tmp_path], exclude_patterns=("vendor", "!vendor")) == ([wanted], [])
 
 
+@pytest.mark.parametrize("ancestor", ["parent", "root"])
+def test_absolute_exclusions_match_ancestors_above_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ancestor: str
+) -> None:
+    root = tmp_path / "scan"
+    wanted = write(root, "src/keep.py")
+    monkeypatch.chdir(root)
+    excluded = tmp_path if ancestor == "parent" else Path(tmp_path.anchor)
+    assert discover_files([root], exclude_patterns=(str(excluded),)) == ([], [])
+    assert discover_files([wanted], exclude_patterns=(str(excluded),)) == ([], [])
+    # Relative names and paths retain their working-directory boundary.
+    assert discover_files([root], exclude_patterns=(tmp_path.name,)) == ([wanted], [])
+
+
 def test_default_excludes_and_opt_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     wanted = write(tmp_path, "keep.py")

@@ -30,7 +30,8 @@ def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = Fa
     """Match a path and its ancestors against case-sensitive fnmatch patterns.
 
     Slashless patterns match names; path patterns match working-directory-relative
-    or absolute paths. A trailing slash restricts a pattern to directories.
+    or absolute paths. Absolute patterns also match ancestors above the working
+    directory. A trailing slash restricts a pattern to directories.
 
     :param Path filepath: Absolute file or directory path to test.
     :param Sequence[str] patterns: Name or path patterns; directory matches exclude descendants.
@@ -38,22 +39,26 @@ def is_excluded(filepath: Path, patterns: Sequence[str], *, directory: bool = Fa
     :return bool: True if a pattern matches the path or one of its ancestor directories.
     """
     cwd = Path.cwd()
+    above_cwd = False
     for candidate in (filepath, *filepath.parents):
         for pattern in patterns:
             if pattern.endswith("/") and candidate == filepath and not directory:
                 continue
-            pattern = pattern.rstrip("/")
+            pattern = pattern.rstrip("/") or pattern[:1]
             path_pattern = "/" in pattern
             if pattern.startswith("./"):
                 pattern = pattern[2:]
-            if Path(pattern).is_absolute():
+            absolute = Path(pattern).is_absolute()
+            if above_cwd and not absolute:
+                continue
+            if absolute:
                 value = candidate.as_posix()
             else:
                 value = display_path(candidate) if path_pattern else candidate.name
             if fnmatchcase(value, pattern):
                 return True
-        if candidate == cwd or candidate == candidate.parent:
-            break
+        if candidate == cwd:
+            above_cwd = True
     return False
 
 
