@@ -2,7 +2,8 @@
 
 Use `pathlint check` to detect usage, `pathlint fix` to apply experimental
 migrations, and `pathlint files` to list selected files. Each command accepts
-files or directories and defaults to the current directory.
+files or directories and defaults to the current directory. A subcommand is
+required: bare `pathlint` prints usage and exits with status `2`.
 
 ```bash
 pathlint --help
@@ -123,18 +124,21 @@ Diff colors are enabled only on interactive terminals.
 Errors take precedence over violations or proposed edits. Other valid files
 are still processed. Ctrl-C exits with status `130`.
 
-## Compatibility
+## Migrating legacy invocations
 
-These legacy invocations are accepted without warnings:
+Use explicit subcommands instead of the removed bare-path and fix-flag forms:
 
-```bash
-pathlint .
-pathlint --fix src/
-pathlint --dry-run src/
-```
+| Removed invocation | Replacement |
+| --- | --- |
+| `pathlint` | `pathlint check` |
+| `pathlint .` | `pathlint check .` |
+| `pathlint --fix src/` | `pathlint fix src/` |
+| `pathlint --dry-run src/` | `pathlint fix src/ --dry-run` |
+| `python -m pathlint.linter src/` | `python -m pathlint check src/` |
+| `python -m pathlint.autofix src/` | `python -m pathlint fix src/` |
 
-`python -m pathlint.linter` and `python -m pathlint.autofix` are supported
-module entry points. Empty selections succeed; dry runs return `1` when they
-propose edits.
+`--stats` and `--aggressive` are check options; they are rejected by `fix`.
+Options may appear between paths. Use `--` before filenames beginning with `-`.
+Empty selections succeed; dry runs return `1` when they propose edits.
 
 Return to the [README](../README.md).

@@ -13,7 +13,7 @@ from typing import Optional, Union
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector, _lint_file
+from pathlint.linter import OSPathDetector, lint_file
 
 
 def run(source: str) -> object:
@@ -37,6 +37,14 @@ def run(source: str) -> object:
         ("import os", "os.path.dirname(FILE)"),
         ("import os", "os.path.expanduser('directory')"),
         ("import os", "os.path.join('directory', 'file')"),
+        ("import os", "os.path.join('directory', 'file',)"),
+        ("import os", "os.path.join('root', 'subdir', 'file.txt')"),
+        ("import os", "os.path.isabs('файл')"),
+        (
+            "import os",
+            "os.path.join(\n    'root',  # ) should not end the call\n"
+            "    'subdir',\n    'file.txt',\n)",
+        ),
         ("import pathlib\nimport os", "os.path.isabs(FILE)"),
         ("import pathlib as paths\nimport os", "os.path.isabs(FILE)"),
         ("from pathlib import Path as P\nimport os", "os.path.isabs(FILE)"),
@@ -51,7 +59,7 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
     updated, count = fix_content(original)
     assert count > 0
     assert run(updated) == run(original)
-    detector = OSPathDetector(updated.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(updated))
     import_lines = {
         node.lineno
@@ -222,7 +230,7 @@ def test_filesystem_predicates_preserve_source_and_results(
         method == "exists" or (method == "isfile") == (kind == "file")
     )
     assert run(original) is expected
-    detector = OSPathDetector(original.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(original))
     assert detector.offenses
 
@@ -352,7 +360,7 @@ def test_type_parameter_scopes_and_lazy_aliases_are_not_rewritten(body: str, exp
     updated, count = fix_content(original)
     assert (updated, count) == (original, 0)
     assert run(updated) == run(original) == expected
-    detector = OSPathDetector(original.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(original))
     assert detector.offenses
 
@@ -885,7 +893,7 @@ def test_unicode_offsets_and_multiline_comments(
     target = tmp_path / "unicode.py"
     with target.open("w", encoding="utf-8", newline="") as stream:
         stream.write(original)
-    assert _lint_file(target) == [
+    assert lint_file(target) == [
         (2, "import os.path"),
         (3, f"label = '🐍{separator}';\fresult = os.path.isabs("),
     ]

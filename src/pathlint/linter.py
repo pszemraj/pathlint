@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
 """Detect os.path imports, aliases, calls, and annotations."""
 
 from __future__ import annotations
 
 import ast
-import sys
 from collections import defaultdict
-from io import StringIO
 from pathlib import Path
+
+from pathlint._source import physical_lines
 
 
 class _ScopeNames(ast.NodeVisitor):
@@ -131,15 +130,12 @@ class OSPathDetector(ast.NodeVisitor):
 
     _use_literal_conditions = True
 
-    def __init__(self, lines: list[str]) -> None:
-        """Initialize lexical bindings and offenses for the supplied source lines."""
-        self.offenses: dict[int, set[str]] = defaultdict(set)
-        self.lines = lines
+    def __init__(self) -> None:
+        """Initialize lexical bindings and offending line numbers."""
+        self.offenses: set[int] = set()
         self.scopes: list[dict[str, str | None]] = [{}]
         self.scope_kinds = ["module"]
         self.scope_globals: list[set[str]] = [set()]
-        self.os_imported = False
-        self.path_aliases: set[str] = set()
         self.mutated_attributes: set[str] = set()
         self.escaped_origins: set[str] = set()
         self.import_origins: dict[str, set[str]] = defaultdict(set)
@@ -227,10 +223,9 @@ class OSPathDetector(ast.NodeVisitor):
             return None
         return origin
 
-    def _record(self, node: ast.AST) -> None:
-        """Record the stripped source line for a node with a valid line number."""
-        if hasattr(node, "lineno") and 0 < node.lineno <= len(self.lines):
-            self.offenses[node.lineno].add(self.lines[node.lineno - 1].strip())
+    def _record(self, node: ast.Import | ast.ImportFrom | ast.Name | ast.Attribute) -> None:
+        """Record the source line number of an offending node."""
+        self.offenses.add(node.lineno)
 
     def _mutation_origins(self, node: ast.AST) -> set[str]:
         """Retain possible import origins for writes without reviving read bindings.
@@ -379,11 +374,8 @@ class OSPathDetector(ast.NodeVisitor):
             origin = alias.name if alias.asname else alias.name.split(".")[0]
             self.scopes[-1][name] = origin
             self.import_origins[name].add(origin)
-            if alias.name == "os":
-                self.os_imported = True
-            elif alias.name == "os.path" or alias.name.startswith("os.path."):
+            if alias.name == "os.path" or alias.name.startswith("os.path."):
                 self._record(node)
-                self.path_aliases.add(alias.asname or "os.path")
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Bind from-import aliases and record absolute os.path imports."""
@@ -402,7 +394,6 @@ class OSPathDetector(ast.NodeVisitor):
                 self.import_origins[name].add(origin)
             if origin and (origin == "os.path" or origin.startswith("os.path.")):
                 self._record(node)
-                self.path_aliases.add(name)
 
     def visit_Name(self, node: ast.Name) -> None:
         """Record loaded os.path aliases or shadow names assigned or deleted."""
@@ -709,62 +700,16 @@ class OSPathDetector(ast.NodeVisitor):
     visit_GeneratorExp = visit_ListComp
 
 
-def _lint_file(filepath: Path) -> list[tuple[int, str]]:
+def lint_file(filepath: Path) -> list[tuple[int, str]]:
     """Read and parse a Python file, propagating read and syntax errors.
 
     :return list[tuple[int, str]]: One (line, stripped source) per offending line, sorted.
     """
     content = filepath.read_text(encoding="utf-8")
     tree = ast.parse(content, filename=str(filepath))
-    if "os" not in content and "path" not in content:
+    if "os" not in content or "path" not in content:
         return []
-    detector = OSPathDetector(list(StringIO(content, newline="")))
+    detector = OSPathDetector()
     detector.visit(tree)
-    return [(line, next(iter(sources))) for line, sources in sorted(detector.offenses.items())]
-
-
-def lint_file(filepath: Path) -> list[tuple[int, str]]:
-    """Lint a file, reporting read and syntax errors to stderr.
-
-    :return list[tuple[int, str]]: Sorted (line, stripped source) findings, or [] on error.
-    """
-    try:
-        return _lint_file(filepath)
-    except SyntaxError as error:
-        print(f"✗ Syntax error in {filepath}:{error.lineno}:{error.offset}", file=sys.stderr)
-    except (OSError, UnicodeError) as error:
-        print(f"✗ Cannot read {filepath}: {error.__class__.__name__}", file=sys.stderr)
-    return []
-
-
-def find_python_files(paths: list[str], exclude_patterns: set[str] | None = None) -> set[Path]:
-    """Collect Python files and report discovery errors to stderr.
-
-    :param list[str] paths: File or directory inputs, using automatic Git ignores.
-    :param set[str] | None exclude_patterns: Replacement exclusions; None uses defaults.
-    :return set[Path]: Selected Python files, including any partial results.
-    """
-    from pathlint.discovery import DEFAULT_EXCLUDES, discover_files
-
-    files, errors = discover_files(
-        [Path(path) for path in paths],
-        default_excludes=DEFAULT_EXCLUDES if exclude_patterns is None else exclude_patterns,
-    )
-    for path, message in errors:
-        print(f"{path}: error: {message}", file=sys.stderr)
-    return set(files)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Forward the original entry point to the shared CLI.
-
-    :param list[str] | None argv: CLI arguments, or None to use process arguments.
-    :return int: The shared CLI's exit status.
-    """
-    from pathlint.cli import main as cli_main
-
-    return cli_main(argv)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    lines = physical_lines(content)
+    return [(line, lines[line - 1].strip()) for line in sorted(detector.offenses)]

@@ -1,4 +1,4 @@
-"""Exercise command behavior, reporting, compatibility, and stream contracts."""
+"""Exercise command behavior, reporting, and stream contracts."""
 
 from __future__ import annotations
 
@@ -72,8 +72,8 @@ def invoke(root: Path, *args: str, encoding: str | None = None) -> subprocess.Co
     )
 
 
-@pytest.mark.parametrize("args", [[], ["check"], ["."], ["check", "."]])
-def test_default_and_legacy_checks(
+@pytest.mark.parametrize("args", [["check"], ["check", "."]])
+def test_check_defaults_to_current_directory(
     workspace: Path, capsys: pytest.CaptureFixture[str], args: list[str]
 ) -> None:
     write_file(workspace, "sample.py")
@@ -85,6 +85,17 @@ def test_default_and_legacy_checks(
     )
     assert output.err == ""
     assert f"{chr(27)}[" not in output.out
+
+
+@pytest.mark.parametrize("args", [[], ["."], ["--fix", "."], ["--dry-run", "."]])
+def test_explicit_subcommand_is_required(workspace: Path, args: list[str]) -> None:
+    path = write_file(workspace, "sample.py")
+    original = path.read_bytes()
+    result = invoke(workspace, *args)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "usage: pathlint" in result.stderr
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -126,9 +137,6 @@ def test_files_lists_only_deduplicated_selection(
         (["check", "one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
         (["fix", "one.py", "--dry-run", "two.py", "--quiet"], 1),
         (["files", "one.py", "--exclude", "vendor", "two.py"], 0),
-        (["one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
-        (["one.py", "--dry-run", "two.py", "--quiet"], 1),
-        (["--stats", "one.py", "--dry-run", "two.py", "--aggressive"], 1),
     ],
 )
 def test_paths_can_follow_interspersed_options(
@@ -212,19 +220,29 @@ def test_json_is_check_only(workspace: Path, command: str) -> None:
     assert "unrecognized arguments" in result.stderr
 
 
+@pytest.mark.parametrize("flag", ["--stats", "--aggressive"])
+def test_fix_rejects_check_only_options(workspace: Path, flag: str) -> None:
+    path = write_file(workspace, "sample.py")
+    original = path.read_bytes()
+    result = invoke(workspace, "fix", flag)
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+    assert path.read_bytes() == original
+
+
 def test_statistics_are_sorted_capped_and_use_single_read(
     workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     for index in range(7):
         write_file(workspace, f"{index}.py", "import os\n" + "os.path.exists('x')\n" * (index + 1))
-    original = cli._lint_file
+    original = cli.lint_file
     reads: list[Path] = []
 
     def track_read(path: Path) -> list[tuple[int, str]]:
         reads.append(path)
         return original(path)
 
-    monkeypatch.setattr(cli, "_lint_file", track_read)
+    monkeypatch.setattr(cli, "lint_file", track_read)
     assert cli.main(["check", "--stats", "--output-format", "json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert [entry["path"] for entry in report["statistics"]] == [
@@ -238,20 +256,12 @@ def test_statistics_are_sorted_capped_and_use_single_read(
     assert len(set(reads)) == 7
 
 
-@pytest.mark.parametrize(
-    "legacy_flags", [None, [], ["--stats"], ["--aggressive"], ["--stats", "--aggressive"]]
-)
 def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
-    workspace: Path, capsys: pytest.CaptureFixture[str], legacy_flags: list[str] | None
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = write_file(workspace, "sample.py")
     original = path.read_bytes()
-    args = (
-        [*legacy_flags, "--dry-run", "sample.py"]
-        if legacy_flags is not None
-        else ["fix", "sample.py", "--dry-run"]
-    )
-    assert cli.main([*args, "--quiet"]) == 1
+    assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 1
     output = capsys.readouterr()
     assert output.out == (
         "--- sample.py\n"
@@ -267,10 +277,7 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
     assert f"{chr(27)}[" not in output.out
     assert output.err == ""
     assert path.read_bytes() == original
-    args = (
-        ["--fix", "sample.py", *legacy_flags] if legacy_flags is not None else ["fix", "sample.py"]
-    )
-    assert cli.main([*args, "--quiet"]) == 0
+    assert cli.main(["fix", "sample.py", "--quiet"]) == 0
     assert "_Path('example').is_absolute()" in path.read_text(encoding="utf-8")
     assert capsys.readouterr() == ("", "")
     assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 0
@@ -373,8 +380,8 @@ def test_fix_parse_error_retains_original(
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("prefix", [[], ["prefix.py"], ["check", "prefix.py", "-q"]])
-def test_legacy_flags_after_sentinel_are_filenames(
+@pytest.mark.parametrize("prefix", [["check"], ["check", "prefix.py", "-q"]])
+def test_flags_after_sentinel_are_filenames(
     workspace: Path, capsys: pytest.CaptureFixture[str], prefix: list[str]
 ) -> None:
     write_file(workspace, "prefix.py", "print('clean')\n")
@@ -384,18 +391,18 @@ def test_legacy_flags_after_sentinel_are_filenames(
     assert "--dry-run.py:2: PL001" in capsys.readouterr().out
 
 
-def test_exclude_option_value_does_not_activate_legacy_fix(workspace: Path) -> None:
+def test_option_like_exclusion_requires_equals_syntax() -> None:
     with pytest.raises(SystemExit) as result:
-        cli.parse_args(["--exclude", "--fix", "."])
+        cli.parse_args(["check", "--exclude", "--fix", "."])
     assert result.value.code == 2
-    args = cli.parse_args(["--exclude=--fix", "."])
+    args = cli.parse_args(["check", "--exclude=--fix", "."])
     assert args.command == "check"
     assert args.exclude == ["--fix"]
 
 
 @pytest.mark.parametrize("pattern", ["--fix", "--stats", "--aggressive"])
-def test_legacy_flags_are_not_removed_from_option_value(pattern: str) -> None:
-    args = cli.parse_args(["--fix", f"--exclude={pattern}", "."])
+def test_option_like_exclusion_is_preserved(pattern: str) -> None:
+    args = cli.parse_args(["fix", f"--exclude={pattern}", "."])
     assert args.command == "fix"
     assert args.exclude == [pattern]
 
@@ -415,27 +422,14 @@ def test_help_lists_shared_options(workspace: Path, command: str | None) -> None
     assert "PosixPath" not in result.stdout
 
 
-def test_version_uses_distribution_metadata(
+def test_version_uses_package_version(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "version", lambda name: "9.8.7" if name == "pathlint" else "wrong")
+    monkeypatch.setattr(cli, "__version__", "9.8.7")
     with pytest.raises(SystemExit) as result:
         cli.main(["--version"])
     assert result.value.code == 0
     assert capsys.readouterr().out.endswith(" 9.8.7\n")
-
-
-def test_uninstalled_source_version_is_helpful(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def unavailable(name: str) -> str:
-        raise PackageNotFoundError(name)
-
-    monkeypatch.setattr(cli, "version", unavailable)
-    with pytest.raises(SystemExit) as result:
-        cli.main(["--version"])
-    assert result.value.code == 0
-    assert "unknown (not installed)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("installed", [True, False])
@@ -455,19 +449,6 @@ def test_package_version_uses_metadata_or_unknown(
             from pathlint import __version__
 
             assert __version__ == ("9.8.7" if installed else "unknown")
-    finally:
-        importlib.reload(pathlint)
-
-
-def test_package_version_does_not_need_generated_version_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    try:
-        with monkeypatch.context() as patch:
-            patch.setattr(importlib.metadata, "version", lambda name: "9.8.7")
-            patch.setitem(sys.modules, "pathlint._version", None)
-            importlib.reload(pathlint)
-            assert pathlint.__version__ == "9.8.7"
     finally:
         importlib.reload(pathlint)
 

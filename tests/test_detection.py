@@ -13,15 +13,15 @@ from typing import get_type_hints
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector, _lint_file
+from pathlint.linter import OSPathDetector, lint_file
 
 
-def offenses(source: str) -> dict[int, set[str]]:
+def offenses(source: str) -> set[int]:
     """Return offending lines for a small source snippet."""
     source = dedent(source).strip()
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
-    return dict(detector.offenses)
+    return detector.offenses
 
 
 @pytest.mark.parametrize("scope", ["module", "function", "class"])
@@ -85,7 +85,7 @@ def test_conditional_bindings_are_analyzed_independently(
     assert namespace["observed"] == expected
     target = tmp_path / "branches.py"
     target.write_text(source, encoding="utf-8")
-    findings = _lint_file(target)
+    findings = lint_file(target)
     expected_lines = {
         index for index, line in enumerate(source.splitlines(), 1) if "result = os.path" in line
     }
@@ -171,7 +171,7 @@ def test_augmented_targets_follow_runtime_evaluation_order(
 
 
 def test_augmented_name_binding_follows_its_value() -> None:
-    assert set(offenses("import os\nos += os.path.exists('missing')")) == {2}
+    assert offenses("import os\nos += os.path.exists('missing')") == {2}
 
 
 @pytest.mark.parametrize(
@@ -194,7 +194,7 @@ def test_augmented_name_binding_follows_its_value() -> None:
     ],
 )
 def test_import_aliases_and_expression_contexts(source: str, expected: set[int]) -> None:
-    assert set(offenses(source)) == expected
+    assert offenses(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -208,11 +208,12 @@ def test_import_aliases_and_expression_contexts(source: str, expected: set[int])
         "from .os.path import exists\nexists('file')",
         "os.path.exists('file')",
         "import os\nos.getcwd()\nos.PathLike",
+        "from pathlib import Path\nresult = Path('file').exists()",
         "message = 'os.path.exists(value)'\n# os.path.exists(value)",
     ],
 )
 def test_only_actual_os_path_imports_are_resolved(source: str) -> None:
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.parametrize("loop", ["module", "for", "while"])
@@ -259,7 +260,7 @@ def test_wildcard_import_invalidates_prior_aliases(
         check=True,
     )
     assert result.stdout.strip() == "custom"
-    assert set(offenses(source)) == import_lines
+    assert offenses(source) == import_lines
 
 
 @pytest.mark.parametrize(
@@ -308,7 +309,7 @@ def test_wildcard_import_respects_deferred_scopes_and_later_imports(
             for line, content in enumerate(source.splitlines(), 1)
             if "os.path.basename" in content
         )
-    assert set(offenses(source)) == expected
+    assert offenses(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -323,7 +324,7 @@ def test_wildcard_import_respects_deferred_scopes_and_later_imports(
 def test_wildcard_import_retains_absolute_os_path_diagnostic(
     source: str, expected: set[int]
 ) -> None:
-    assert set(offenses(source)) == expected
+    assert offenses(source) == expected
 
 
 @pytest.mark.parametrize("wildcard_first", [False, True])
@@ -365,7 +366,7 @@ def test_comprehension_bindings_follow_evaluation_time(
     )
     real_os = deferred == wildcard_first
     assert result.stdout.strip() == ("b" if real_os else "custom")
-    assert set(offenses(source)) == ({3 if wildcard_first else 2} if real_os else set())
+    assert offenses(source) == ({3 if wildcard_first else 2} if real_os else set())
     assert fix_content(source) == (source, 0)
 
 
@@ -388,7 +389,7 @@ def test_comprehension_bindings_follow_evaluation_time(
     ],
 )
 def test_shadowed_os_names_are_not_resolved(source: str) -> None:
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.parametrize("method", [False, True])
@@ -403,7 +404,7 @@ def test_private_alias_respects_class_name_mangling(method: bool) -> None:
         + "\n".join("    " + line for line in body.splitlines())
         + ("\nresult = Example().check()\n" if method else "\nresult = Example.result\n")
     )
-    assert offenses(source) == {}
+    assert not offenses(source)
     assert fix_content(source) == (source, 0)
     namespace: dict[str, object] = {}
     exec(compile(source, "<private-alias>", "exec", dont_inherit=True), namespace)
@@ -418,7 +419,7 @@ def test_shadowed_function_alias_keeps_import_diagnostic_only() -> None:
         present = lambda value: True
         present('file')
     """
-    assert set(offenses(source)) == {1}
+    assert offenses(source) == {1}
 
 
 def test_function_import_does_not_escape_to_module() -> None:
@@ -428,7 +429,7 @@ def test_function_import_does_not_escape_to_module() -> None:
             return system.path.exists('file')
         system.path.exists('file')
     """
-    assert set(offenses(source)) == {3}
+    assert offenses(source) == {3}
 
 
 def test_nested_function_inherits_import_and_respects_own_arguments() -> None:
@@ -440,7 +441,7 @@ def test_nested_function_inherits_import_and_respects_own_arguments() -> None:
             def shadowed(system):
                 return system.path.exists('file')
     """
-    assert set(offenses(source)) == {4}
+    assert offenses(source) == {4}
 
 
 def test_global_and_nonlocal_declarations_preserve_import_resolution() -> None:
@@ -455,7 +456,7 @@ def test_global_and_nonlocal_declarations_preserve_import_resolution() -> None:
                 nonlocal osp
                 return osp.exists('file')
     """
-    assert set(offenses(source)) == {4, 6, 9}
+    assert offenses(source) == {4, 6, 9}
 
 
 @pytest.mark.parametrize("declaration", ["global", "nonlocal"])
@@ -478,7 +479,7 @@ def test_nested_external_declaration_selects_its_namespace(
         "result = outer()\n"
     )
     uses_import = module_import if declaration == "global" else not module_import
-    assert set(offenses(source)) == ({7} if uses_import else set())
+    assert offenses(source) == ({7} if uses_import else set())
     updated, _ = fix_content(source)
     for content in (source, updated):
         namespace = {}
@@ -519,7 +520,7 @@ def test_immediate_class_external_writes_invalidate_owner(declaration: str, stat
     source += body
     updated, count = fix_content(source)
     assert count == 0
-    assert offenses(source) == {}
+    assert not offenses(source)
     for content in (source, updated):
         namespace = {}
         exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
@@ -560,7 +561,7 @@ def test_class_external_write_does_not_leave_import_visible(
     source += body
     updated, count = fix_content(source)
     assert count == 0
-    assert offenses(source) == {}
+    assert not offenses(source)
     for content in (source, updated):
         namespace = {}
         exec(compile(content, "<class-external>", "exec", dont_inherit=True), namespace)
@@ -577,7 +578,7 @@ def test_class_assignment_does_not_shadow_global_inside_methods() -> None:
             def method(self):
                 return os.path.exists('file')
     """
-    assert set(offenses(source)) == {6}
+    assert offenses(source) == {6}
 
 
 @pytest.mark.parametrize(
@@ -600,7 +601,7 @@ def test_class_deleted_binding_restores_global_import(
     source = imports + "\nclass Example:\n" + indent(body, "    ")
     source += f"    value = {expression}\nresult = Example.value\n"
     target_line = len(source.splitlines()) - 1
-    assert set(offenses(source)) == import_lines | {target_line}
+    assert offenses(source) == import_lines | {target_line}
     updated, count = fix_content(source)
     assert count == 1
     for content in (source, updated):
@@ -625,7 +626,7 @@ def test_nested_class_deleted_binding_uses_globals(cleanup: str, global_import: 
     source += "        value = os.path.basename('a/b')\n    return Example.value\n"
     source += "result = outer()\n"
     target_line = len(source.splitlines()) - 2
-    assert set(offenses(source)) == ({target_line} if global_import else set())
+    assert offenses(source) == ({target_line} if global_import else set())
     updated, _ = fix_content(source)
     for content in (source, updated):
         namespace: dict[str, object] = {}
@@ -655,7 +656,7 @@ def test_class_missing_locals_and_methods_select_their_namespaces(global_import:
         "    return (Example.before, Example.after, Example.imported, Example.rebound, Example().method())\n"
         "result = outer()\n"
     )
-    assert set(offenses(source)) == ({7, 10, 12} if global_import else {12, 16})
+    assert offenses(source) == ({7, 10, 12} if global_import else {12, 16})
     updated, _ = fix_content(source)
     expected = (
         ("b", "b", "b", "custom", "custom")
@@ -691,7 +692,7 @@ def test_other_scope_deletions_do_not_restore_imports(scope: str, cleanup: str) 
         source += "def outer():\n    import os\n    class Example:\n        nonlocal os\n"
         source += indent(body, "        ")
         source += "    return Example.value\nresult = outer()\n"
-    assert offenses(source) == {}
+    assert not offenses(source)
     assert fix_content(source) == (source, 0)
     namespace: dict[str, object] = {}
     exec(compile(source, "<deleted-binding>", "exec", dont_inherit=True), namespace)
@@ -706,12 +707,12 @@ def test_class_import_does_not_escape_into_methods() -> None:
             def method(self):
                 return os.path.exists('file')
     """
-    assert set(offenses(source)) == {3}
+    assert offenses(source) == {3}
 
 
 def test_class_name_is_bound_after_its_body() -> None:
     source = "import os\nclass os:\n    result = os.path.exists('file')"
-    assert set(offenses(source)) == {3}
+    assert offenses(source) == {3}
 
 
 @pytest.mark.parametrize("target", ["os", "os.path.exists", "os.path.__dict__['exists']"])
@@ -722,7 +723,7 @@ def test_annotation_only_target_does_not_assign(target: str) -> None:
 
 def test_annotation_only_function_name_remains_local() -> None:
     source = "import os\ndef f():\n    os: object\n    os.path.exists('file')"
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 def test_annotated_assignment_binds_before_annotation() -> None:
@@ -733,7 +734,7 @@ def test_annotated_assignment_binds_before_annotation() -> None:
         "os: os.path.isabs('file') = custom\n"
         "result = __annotations__['os']\n"
     )
-    assert offenses(source) == {}
+    assert not offenses(source)
     updated, count = fix_content(source)
     assert count == 0
     for content in (source, updated):
@@ -824,7 +825,7 @@ def test_function_defaults_bind_before_annotations(definition: str, parameter: s
         "    pass\n"
         "result = f.__annotations__['arg']\n"
     )
-    assert offenses(source) == {}
+    assert not offenses(source)
     updated, count = fix_content(source)
     assert count == 0
     for content in (source, updated):
@@ -842,7 +843,7 @@ def test_definition_walrus_does_not_become_function_local(parameter: str) -> Non
         "import os\n"
         "result = f()\n"
     )
-    assert set(offenses(source)) == {3}
+    assert offenses(source) == {3}
     assert fix_content(source) == (source, 0)
     namespace = {}
     exec(compile(source, "<definition>", "exec", dont_inherit=True), namespace)
@@ -860,12 +861,12 @@ def test_definition_walrus_does_not_become_function_local(parameter: str) -> Non
 )
 def test_comprehension_targets_shadow_only_comprehension(expression: str) -> None:
     source = f"import os\nresult = {expression}\nos.path.exists('file')"
-    assert set(offenses(source)) == {3}
+    assert offenses(source) == {3}
 
 
 def test_comprehension_outer_iterable_uses_outer_scope() -> None:
     source = "import os\nresult = [os.path for os in os.path.split('a/b')]"
-    assert set(offenses(source)) == {2}
+    assert offenses(source) == {2}
 
 
 def test_comprehension_target_does_not_become_function_local() -> None:
@@ -876,7 +877,7 @@ def test_comprehension_target_does_not_become_function_local() -> None:
             result = [os.path for os in values]
             return os.path.exists('file')
     """
-    assert set(offenses(source)) == {3, 5}
+    assert offenses(source) == {3, 5}
 
 
 @pytest.mark.parametrize(
@@ -899,7 +900,7 @@ def test_comprehension_walrus_invalidates_containing_binding(
     body = f"import os as alias\nresult = {expression}\nalias.path.exists('file')"
     if in_function:
         body = "def f(custom):\n" + "\n".join("    " + line for line in body.splitlines())
-    assert offenses(body) == {}
+    assert not offenses(body)
 
 
 def test_comprehension_walrus_invalidates_calls_on_later_iterations() -> None:
@@ -907,7 +908,7 @@ def test_comprehension_walrus_invalidates_calls_on_later_iterations() -> None:
         import os as alias
         result = [(alias.path.exists('file'), (alias := custom)) for _ in [0, 1]]
     """
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 def test_lambda_argument_does_not_become_enclosing_function_local() -> None:
@@ -917,7 +918,7 @@ def test_lambda_argument_does_not_become_enclosing_function_local() -> None:
             callback = lambda os: os.path
             return os.path.exists('file')
     """
-    assert set(offenses(source)) == {4}
+    assert offenses(source) == {4}
 
 
 def test_for_iterable_is_resolved_before_binding_target() -> None:
@@ -926,7 +927,7 @@ def test_for_iterable_is_resolved_before_binding_target() -> None:
         for os in os.path.split('a/b'):
             os.path.exists('file')
     """
-    assert set(offenses(source)) == {2}
+    assert offenses(source) == {2}
 
 
 @pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
@@ -947,7 +948,7 @@ def test_loop_exits_retain_only_certain_bindings(
     )
     if loop.startswith("async"):
         source = "async def f(custom, values):\n" + indent(source, "    ")
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
@@ -959,12 +960,12 @@ def test_repeated_loop_bindings_do_not_resolve_earlier_calls(loop: str) -> None:
     )
     if loop.startswith("async"):
         source = "async def f(custom, values):\n" + indent(source, "    ")
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 def test_while_test_respects_bindings_from_later_iterations() -> None:
     source = "import os\nwhile os.path.basename('a/b'):\n    os = custom"
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.parametrize("initial", ["import os", "os = custom"])
@@ -973,7 +974,7 @@ def test_literal_false_loop_does_not_establish_body_bindings(initial: str) -> No
         f"{initial}\nwhile False:\n    import os\n"
         "else:\n    os = custom\nresult = os.path.basename('a/b')"
     )
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
@@ -986,7 +987,7 @@ def test_stable_loop_imports_remain_detectable_in_each_suite(loop: str) -> None:
     if loop.startswith("async"):
         source = "async def f(values):\n" + indent(source, "    ")
         expected = {line + 1 for line in expected}
-    assert set(offenses(source)) == expected
+    assert offenses(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -1014,18 +1015,52 @@ def test_loop_false_positive_reproducer_executes_custom_binding(loop: str) -> No
     namespace: dict[str, object] = {}
     exec(source, namespace)
     assert namespace["result"] == "custom"
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
-def test_multiple_usages_on_one_line_keep_exact_source_once() -> None:
-    source = """
+def test_multiple_usages_on_one_line_keep_exact_source_once(tmp_path: Path) -> None:
+    source = dedent("""
         from os.path import exists as present, join
         result = present(join('a', 'b')); callback = present
-    """
-    assert offenses(source) == {
-        1: {"from os.path import exists as present, join"},
-        2: {"result = present(join('a', 'b')); callback = present"},
-    }
+    """).strip()
+    assert offenses(source) == {1, 2}
+    target = tmp_path / "multiple.py"
+    target.write_text(source, encoding="utf-8")
+    assert lint_file(target) == [
+        (1, "from os.path import exists as present, join"),
+        (2, "result = present(join('a', 'b')); callback = present"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import os\nprint(os.path.exists('test'))\n", [(2, "print(os.path.exists('test'))")]),
+        (
+            "from os import path as osp\nresult = osp.exists('file')\n",
+            [(1, "from os import path as osp"), (2, "result = osp.exists('file')")],
+        ),
+        (
+            "import os\nmarker = 'line\vbreak'\nresult = os.path.basename('a/b')\n",
+            [(3, "result = os.path.basename('a/b')")],
+        ),
+        ("import ntpath\nresult = ntpath.basename('a/b')\n", []),
+        ("import posixpath\nresult = posixpath.basename('a/b')\n", []),
+    ],
+)
+def test_lint_file_preserves_findings_and_physical_lines(
+    tmp_path: Path, source: str, expected: list[tuple[int, str]]
+) -> None:
+    target = tmp_path / "source.py"
+    target.write_text(source, encoding="utf-8")
+    assert lint_file(target) == expected
+
+
+def test_lint_file_parses_before_skipping_irrelevant_source(tmp_path: Path) -> None:
+    target = tmp_path / "invalid.py"
+    target.write_text("if True\n    pass\n", encoding="utf-8")
+    with pytest.raises(SyntaxError):
+        lint_file(target)
 
 
 @pytest.mark.parametrize(
@@ -1046,7 +1081,7 @@ def test_attribute_mutations_invalidate_all_aliases_and_reimports(mutation: str)
         "import os.path as imported_again\n"
         "from os.path import basename as named_again\n"
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {"os.path.basename"}
     for expression in (
@@ -1062,7 +1097,7 @@ def test_attribute_mutations_invalidate_all_aliases_and_reimports(mutation: str)
 
 def test_replacing_path_module_invalidates_descendants() -> None:
     source = "import os\nfrom os import path as osp\nos.path = custom\nimport os as system"
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {"os.path"}
     for expression in ("osp", "osp.basename", "os.path.exists", "system.path.dirname"):
@@ -1096,7 +1131,7 @@ def test_module_class_mutations_invalidate_sibling_lookups(
         "import os.path as osp\nfrom os.path import basename\n"
         "import pathlib as paths\nfrom pathlib import Path\n"
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {changed}
     affected = (
@@ -1130,7 +1165,7 @@ def test_copied_module_class_mutations_retain_whole_module_origins(
     import_statement: str, changed: str, expression: str, copy: str
 ) -> None:
     source = f"{import_statement}\n{copy}\nimport os\nimport pathlib as paths\n"
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {changed}
     assert detector.resolve(ast.parse(expression, mode="eval").body) is None
@@ -1164,7 +1199,7 @@ def test_callable_mutations_invalidate_function_without_invalidating_module(
         import_statement + "\n" + statement.format(target=target) + "\n"
         "import os.path as other\nfrom os.path import basename as named_again\n"
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {f"os.path.basename.{attribute}"}
     for expression in (target, "other.basename", "named_again"):
@@ -1186,7 +1221,7 @@ def test_callable_mutations_invalidate_function_without_invalidating_module(
 )
 def test_pathlib_mutations_invalidate_constructor_origins(statement: str, expected: str) -> None:
     source = "import pathlib as module\nfrom pathlib import Path as constructor\n" + statement
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {expected}
     assert (
@@ -1213,7 +1248,7 @@ def test_deferred_method_mutations_are_collected() -> None:
         result = reader()
     """
     source = dedent(source).strip()
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {"os.path.basename"}
 
@@ -1267,7 +1302,7 @@ def test_copied_alias_mutations_do_not_establish_read_bindings(
         + "\n"
         + mutation
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert changed in detector.mutated_attributes
     assert detector.resolve(ast.parse("alias", mode="eval").body) is None
@@ -1304,7 +1339,7 @@ def test_escaped_namespace_copies_exclude_fixes_without_hiding_findings(
         + copy.replace("original", original)
         + "\nresult = osp.basename('a/b')\n"
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert escaped in detector.escaped_origins
     assert len(source.splitlines()) in detector.offenses
@@ -1320,7 +1355,7 @@ def test_alias_copy_cycles_have_finite_mutation_origins() -> None:
     )
     program = (
         "import ast, sys\nfrom pathlint.linter import OSPathDetector\n"
-        "source = sys.argv[1]\ndetector = OSPathDetector(source.splitlines())\n"
+        "source = sys.argv[1]\ndetector = OSPathDetector()\n"
         "detector.visit(ast.parse(source))\n"
         "assert 'os.path.basename.__code__' in detector.mutated_attributes\n"
         "assert detector.resolve(ast.parse('osp.basename', mode='eval').body) is None\n"
@@ -1330,7 +1365,7 @@ def test_alias_copy_cycles_have_finite_mutation_origins() -> None:
 
 def test_copied_alias_calls_remain_unresolved() -> None:
     source = "import os.path as osp\nalias = osp\nresult = alias.basename('a/b')\n"
-    assert set(offenses(source)) == {1, 2}
+    assert offenses(source) == {1, 2}
     assert fix_content(source) == (source, 0)
 
 
@@ -1354,7 +1389,7 @@ def test_uncertain_alias_mutations_retain_possible_import_origin(
         f"{attribute} = custom\n"
         "import os.path as other\n"
     )
-    detector = OSPathDetector(source.splitlines())
+    detector = OSPathDetector()
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {"os.path.basename"}
     assert detector.resolve(ast.parse("other.basename", mode="eval").body) is None
@@ -1373,7 +1408,7 @@ def test_function_resolves_import_defined_after_definition() -> None:
         import os
         result = f()
     """
-    assert set(offenses(source)) == {2}
+    assert offenses(source) == {2}
 
 
 def test_function_respects_global_reassignment_before_call() -> None:
@@ -1385,7 +1420,7 @@ def test_function_respects_global_reassignment_before_call() -> None:
         os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: False))
         result = f()
     """
-    assert offenses(source) == {}
+    assert not offenses(source)
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="match requires Python 3.10")
@@ -1398,4 +1433,4 @@ def test_match_captures_are_local_bindings(pattern: str) -> None:
         f"        case {pattern}:\n"
         "            return os.path.exists('file')\n"
     )
-    assert offenses(source) == {}
+    assert not offenses(source)

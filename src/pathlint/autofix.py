@@ -1,16 +1,15 @@
-#!/usr/bin/env python3
 """Migrate supported os.path calls using AST locations and source-preserving edits."""
 
 from __future__ import annotations
 
 import ast
-import difflib
 import ntpath
 import sys
 import tokenize
 from io import StringIO
-from pathlib import Path, PureWindowsPath
+from pathlib import PureWindowsPath
 
+from pathlint._source import physical_lines
 from pathlint.linter import OSPathDetector, _ScopeNames
 
 METHODS = {
@@ -30,7 +29,7 @@ class _Source:
         :param str content: Python source whose original character offsets identify edits.
         """
         self.content = content
-        self.lines = list(StringIO(content, newline=""))
+        self.lines = physical_lines(content)
         self.starts = [0]
         for line in self.lines:
             self.starts.append(self.starts[-1] + len(line))
@@ -93,7 +92,7 @@ class _PathFixer(OSPathDetector):
         :param str content: Original Python source to edit.
         :param ast.Module tree: Parsed module used to identify names and leading imports.
         """
-        super().__init__(list(StringIO(content, newline="")))
+        super().__init__()
         self.source = _Source(content)
         self.count = 0
         self.needs_import = False
@@ -433,15 +432,15 @@ class _PathFixer(OSPathDetector):
         self.count += 1
 
 
-def _insert_import(content: str, name: str = "Path") -> str:
+def _insert_import(content: str, name: str) -> str:
     """Insert a Path import after the module header while preserving newline style.
 
     :param str content: Python source to receive the import.
-    :param str name: Local name to bind, using an alias when it differs from Path.
+    :param str name: Private local alias for the inserted constructor.
     :return str: Source with the import before executable statements and after headers.
     """
     tree = ast.parse(content)
-    lines = list(StringIO(content, newline=""))
+    lines = physical_lines(content)
     newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
     insertion = tree.body[0].lineno - 1 if tree.body else len(lines)
     if tree.body and getattr(tree.body[0], "decorator_list", []):
@@ -487,35 +486,14 @@ def _insert_import(content: str, name: str = "Path") -> str:
                 prefix = content[:offset].rstrip("; \t")
                 if prefix and not prefix.endswith(("\r", "\n")):
                     prefix += newline
-                statement = "from pathlib import Path" + (f" as {name}" if name != "Path" else "")
+                statement = f"from pathlib import Path as {name}"
                 return prefix + statement + newline + content[offset:]
             break
-    statement = "from pathlib import Path"
-    if name != "Path":
-        statement += f" as {name}"
+    statement = f"from pathlib import Path as {name}"
     prefix = "".join(lines[:insertion])
     if prefix and not prefix.endswith(("\r", "\n")):
         prefix += newline
     return prefix + statement + newline + "".join(lines[insertion:])
-
-
-def add_pathlib_import(content: str) -> str:
-    """Add a Path import unless a top-level pathlib or Path import already exists.
-
-    :param str content: Python source to inspect and update.
-    :return str: Original source when an import exists, or source with a Path import added.
-    """
-    tree = ast.parse(content)
-    for node in tree.body:
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "pathlib"
-            and any(alias.name == "Path" for alias in node.names)
-        ) or (
-            isinstance(node, ast.Import) and any(alias.name == "pathlib" for alias in node.names)
-        ):
-            return content
-    return _insert_import(content)
 
 
 def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
@@ -754,7 +732,7 @@ def fix_content(content: str) -> tuple[str, int]:
     ):
         # Type parameters and lazy aliases use annotation scopes we do not analyze.
         return content, 0
-    detector = OSPathDetector(list(StringIO(content, newline="")))
+    detector = OSPathDetector()
     detector.visit(tree)
     fixer = _PathFixer(content, tree)
     fixer.mutated_attributes.update(detector.mutated_attributes)
@@ -771,47 +749,3 @@ def fix_content(content: str) -> tuple[str, int]:
     if fixer.needs_import:
         updated = _insert_import(updated, fixer.path_name)
     return updated, fixer.count + import_count
-
-
-def fix_file(filepath: Path, dry_run: bool = False) -> int:
-    """Fix one file or print its preview, reporting expected errors to stderr.
-
-    :param Path filepath: UTF-8 Python source file to transform.
-    :param bool dry_run: Print a unified diff instead of writing changes.
-    :return int: Proposed replacement count, or zero on read, parse, or write failure.
-    """
-    try:
-        original = filepath.read_text(encoding="utf-8")
-        updated, count = fix_content(original)
-        if count and not dry_run:
-            filepath.write_text(updated, encoding="utf-8")
-    except (OSError, UnicodeError, SyntaxError) as error:
-        print(f"Cannot fix {filepath}: {error}", file=sys.stderr)
-        return 0
-    if count:
-        if dry_run:
-            for line in difflib.unified_diff(
-                list(StringIO(original, newline="")),
-                list(StringIO(updated, newline="")),
-                fromfile=str(filepath),
-                tofile=f"{filepath} (fixed)",
-            ):
-                print(line.rstrip("\n"))
-        else:
-            print(f"Fixed {filepath}: {count} replacements.")
-    return count
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Forward the original autofix module entry point to the fix command.
-
-    :param list[str] | None argv: Arguments, defaulting to the current process arguments.
-    :return int: Exit status returned by the fix command.
-    """
-    from pathlint.cli import main as cli_main
-
-    return cli_main(["fix", *(sys.argv[1:] if argv is None else argv)])
-
-
-if __name__ == "__main__":
-    sys.exit(main())
