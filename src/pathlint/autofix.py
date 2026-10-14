@@ -482,7 +482,10 @@ def _clean_imports(content: str) -> tuple[str, int]:
         # Explicit exports can refer to imports by string, including imported lists.
         return content, 0
     if any(
-        getattr(node, "annotation", None) is not None or getattr(node, "returns", None) is not None
+        getattr(node, "annotation", None) is not None
+        or getattr(node, "returns", None) is not None
+        or (isinstance(node, ast.Name) and node.id == "__annotations__")
+        or (isinstance(node, ast.Attribute) and node.attr == "__annotations__")
         for node in ast.walk(tree)
     ):
         # Annotation aliases can resolve to strings that need imports after loading.

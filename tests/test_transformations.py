@@ -361,6 +361,15 @@ def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: st
             "Alias = 'basename'\ndef check(value: Alias): pass",
             "get_type_hints(check)['value'].__name__",
         ),
+        (
+            "def check(value): pass\ncheck.__annotations__ = {'value': 'basename'}",
+            "get_type_hints(check)['value'].__name__",
+        ),
+        (
+            "import types\n__annotations__ = {'value': 'basename'}\n"
+            "module = types.ModuleType('fixture')\nmodule.__dict__.update(globals())",
+            "get_type_hints(module)['value'].__name__",
+        ),
     ],
 )
 def test_import_cleanup_preserves_quoted_annotations(
