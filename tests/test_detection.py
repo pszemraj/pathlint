@@ -23,9 +23,9 @@ def offenses(source: str) -> dict[int, set[str]]:
 @pytest.mark.parametrize(
     ("expression", "index", "expected", "changes"),
     [
-        ("{'first': (os := custom), os.path.exists('missing'): 0}", -1, "custom", False),
-        ("{**((os := custom) and {}), os.path.exists('missing'): 0}", 0, "custom", False),
-        ("{os.path.exists('missing'): 0, 'last': (os := custom)}", 0, False, True),
+        ("{'first': (os := custom), os.path.isabs('missing'): 0}", -1, "custom", False),
+        ("{**((os := custom) and {}), os.path.isabs('missing'): 0}", 0, "custom", False),
+        ("{os.path.isabs('missing'): 0, 'last': (os := custom)}", 0, False, True),
     ],
 )
 def test_dictionary_entries_follow_runtime_evaluation_order(
@@ -33,7 +33,7 @@ def test_dictionary_entries_follow_runtime_evaluation_order(
 ) -> None:
     source = (
         "import os\nfrom types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         f"mapping = {expression}\nresult = list(mapping)[{index}]\n"
     )
     updated, count = fix_content(source)
@@ -50,28 +50,28 @@ def test_dictionary_entries_follow_runtime_evaluation_order(
     [
         (
             "values = {custom: 0}",
-            "values[(os := custom)] += os.path.exists('missing')",
+            "values[(os := custom)] += os.path.isabs('missing')",
             "values[custom]",
             10,
             False,
         ),
         (
             "",
-            "(os := custom).value += os.path.exists('missing')",
+            "(os := custom).value += os.path.isabs('missing')",
             "custom.value",
             10,
             False,
         ),
         (
             "value = 0",
-            "value += os.path.exists('missing')",
+            "value += os.path.isabs('missing')",
             "value",
             0,
             True,
         ),
         (
             "values = {False: 0}",
-            "values[os.path.exists('missing')] += (os := custom).value + 10",
+            "values[os.path.isabs('missing')] += (os := custom).value + 10",
             "values[False]",
             10,
             True,
@@ -84,7 +84,7 @@ def test_augmented_targets_follow_runtime_evaluation_order(
     source = (
         "import os\nfrom types import SimpleNamespace\n"
         "class Custom:\n"
-        "    path = SimpleNamespace(exists=lambda value: 10)\n"
+        "    path = SimpleNamespace(isabs=lambda value: 10)\n"
         "    value = 0\n"
         "custom = Custom()\n"
         f"{setup}\n{statement}\nresult = {result}\n"
@@ -215,7 +215,7 @@ def test_global_and_nonlocal_declarations_preserve_import_resolution() -> None:
 def test_nested_external_declaration_selects_its_namespace(
     declaration: str, module_import: bool
 ) -> None:
-    custom = "os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))"
+    custom = "os = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))"
     module_binding = "import os" if module_import else custom
     outer_binding = custom if module_import else "import os"
     source = (
@@ -225,7 +225,7 @@ def test_nested_external_declaration_selects_its_namespace(
         f"    {outer_binding}\n"
         "    def inner():\n"
         f"        {declaration} os\n"
-        "        return os.path.exists('unlikely-name')\n"
+        "        return os.path.isabs('unlikely-name')\n"
         "    return inner()\n"
         "result = outer()\n"
     )
@@ -253,14 +253,14 @@ def test_nested_external_declaration_selects_its_namespace(
 def test_immediate_class_external_writes_invalidate_owner(declaration: str, statement: str) -> None:
     source = (
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
     )
     body = (
         "os = custom\n"
         "class C:\n"
         f"    {declaration} os\n"
         + "\n".join("    " + line for line in statement.splitlines())
-        + "\nresult = os.path.exists('unlikely-name')\n"
+        + "\nresult = os.path.isabs('unlikely-name')\n"
     )
     if declaration == "nonlocal":
         body = (
@@ -285,7 +285,7 @@ def test_class_external_write_does_not_leave_import_visible(
 ) -> None:
     source = (
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
     )
     body = (
         "import os\n"
@@ -294,11 +294,11 @@ def test_class_external_write_does_not_leave_import_visible(
         f"    {statement}\n"
         "    class Nested:\n"
         "        try:\n"
-        "            result = os.path.exists('unlikely-name')\n"
+        "            result = os.path.isabs('unlikely-name')\n"
         "        except NameError:\n"
         "            result = 'deleted'\n"
         "try:\n"
-        "    later = os.path.exists('unlikely-name')\n"
+        "    later = os.path.isabs('unlikely-name')\n"
         "except NameError:\n"
         "    later = 'deleted'\n"
         "result = (C.Nested.result, later)\n"
@@ -363,8 +363,8 @@ def test_annotated_assignment_binds_before_annotation() -> None:
     source = (
         "import os\n"
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
-        "os: os.path.exists('file') = custom\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
+        "os: os.path.isabs('file') = custom\n"
         "result = __annotations__['os']\n"
     )
     assert offenses(source) == {}
@@ -382,8 +382,8 @@ def test_function_defaults_bind_before_annotations(definition: str, parameter: s
     source = (
         "import os\n"
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
-        f"{definition} f({parameter}: os.path.exists('unlikely-name') = (os := custom)):\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
+        f"{definition} f({parameter}: os.path.isabs('unlikely-name') = (os := custom)):\n"
         "    pass\n"
         "result = f.__annotations__['arg']\n"
     )
@@ -401,7 +401,7 @@ def test_definition_walrus_does_not_become_function_local(parameter: str) -> Non
     source = (
         "import os\n"
         f"def f({parameter}):\n"
-        "    return os.path.exists('unlikely-name')\n"
+        "    return os.path.isabs('unlikely-name')\n"
         "import os\n"
         "result = f()\n"
     )

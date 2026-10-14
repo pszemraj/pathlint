@@ -24,25 +24,23 @@ def run(source: str) -> object:
 @pytest.mark.parametrize(
     ("imports", "expression"),
     [
-        ("import os", "os.path.exists(FILE)"),
-        ("import os as operating_system", "operating_system.path.exists(FILE)"),
-        ("import os.path as paths", "paths.exists(FILE)"),
-        ("from os import path as paths", "paths.exists(FILE)"),
-        ("from os.path import exists as present", "present(FILE)"),
-        ("from os.path import isfile", "isfile(FILE)"),
-        ("from os.path import isdir", "isdir(FILE)"),
         ("import os", "os.path.isabs(FILE)"),
+        ("import os as operating_system", "operating_system.path.isabs(FILE)"),
+        ("import os.path as paths", "paths.isabs(FILE)"),
+        ("from os import path as paths", "paths.isabs(FILE)"),
+        ("from os.path import isabs as present", "present(FILE)"),
+        ("from os.path import isabs", "isabs(FILE)"),
         ("import os", "os.path.basename(FILE)"),
         ("import os", "os.path.dirname(FILE)"),
         ("import os", "os.path.expanduser(FILE)"),
         ("import os", "os.path.join('directory', 'file')"),
         ("import os", "os.path.basename(os.path.join('directory', 'file'))"),
-        ("import pathlib\nimport os", "os.path.exists(FILE)"),
-        ("import pathlib as paths\nimport os", "os.path.exists(FILE)"),
-        ("from pathlib import Path as P\nimport os", "os.path.exists(FILE)"),
+        ("import pathlib\nimport os", "os.path.isabs(FILE)"),
+        ("import pathlib as paths\nimport os", "os.path.isabs(FILE)"),
+        ("from pathlib import Path as P\nimport os", "os.path.isabs(FILE)"),
         ("import os.path as paths", "(paths.basename)('directory/file')"),
-        ("import os", "((os.path.exists))(FILE)"),
-        ("from os.path import exists as present", "(present)(FILE)"),
+        ("import os", "((os.path.isabs))(FILE)"),
+        ("from os.path import isabs as present", "(present)(FILE)"),
         ("import os", "(os.path.basename)((os.path.join)('directory', 'file'))"),
         ("import os", "(\n    (os.path.basename)  # callable (comment\n    ('directory/file')\n)"),
     ],
@@ -67,9 +65,9 @@ def test_supported_calls_preserve_results(tmp_path: Path, imports: str, expressi
         "os.path.splitext('directory/file.tar.gz')",
         "os.path.sep",
         "os.path.pathsep",
-        "os.path.exists(path='file')",
+        "os.path.isabs(s='file')",
         "os.path.join('directory', *parts)",
-        "os.path.exists(b'file')",
+        "os.path.isabs(b'file')",
         "os.path.basename('directory/')",
         "os.path.basename('.')",
         "os.path.dirname('file')",
@@ -81,6 +79,57 @@ def test_supported_calls_preserve_results(tmp_path: Path, imports: str, expressi
 def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> None:
     original = f"import os\nresult = {expression}\n"
     assert fix_content(original) == (original, 0)
+
+
+@pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])
+@pytest.mark.parametrize("kind", ["file", "directory", "missing", "overlong"])
+@pytest.mark.parametrize(
+    ("imports", "call"),
+    [
+        ("import os", "os.path.{method}"),
+        ("import os.path as paths", "paths.{method}"),
+        ("from os import path as paths", "paths.{method}"),
+        ("from os.path import {method} as predicate", "predicate"),
+    ],
+)
+def test_filesystem_predicates_preserve_source_and_results(
+    tmp_path: Path, method: str, kind: str, imports: str, call: str
+) -> None:
+    """Keep predicate imports and calls, including filesystem errors returning False."""
+    target = tmp_path / ("a" * 300 if kind == "overlong" else kind)
+    if kind == "file":
+        target.write_text("content", encoding="utf-8")
+    elif kind == "directory":
+        target.mkdir()
+    original = (
+        imports.format(method=method)
+        + f"\nresult = {call.format(method=method)}({str(target)!r})\n"
+    )
+    assert fix_content(original) == (original, 0)
+    expected = kind in {"file", "directory"} and (
+        method == "exists" or (method == "isfile") == (kind == "file")
+    )
+    assert run(original) is expected
+    detector = OSPathDetector(original.splitlines())
+    detector.visit(ast.parse(original))
+    assert detector.offenses
+
+
+def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
+    """Migrate a supported call while preserving neighboring filesystem predicates."""
+    target = tmp_path / "file"
+    target.write_text("content", encoding="utf-8")
+    original = (
+        "from os.path import exists, isfile, isdir, basename\n"
+        f"result = (exists({str(target)!r}), isfile({str(target)!r}), "
+        f"isdir({str(tmp_path)!r}), basename('directory/file'))\n"
+    )
+    updated, count = fix_content(original)
+    assert count == 2
+    assert "from os.path import exists, isfile, isdir\n" in updated
+    assert "Path('directory/file').name" in updated
+    assert run(updated) == run(original) == (True, True, True, "file")
+    assert fix_content(updated) == (updated, 0)
 
 
 @pytest.mark.parametrize(
@@ -213,19 +262,19 @@ def test_abspath_is_not_replaced_by_symlink_resolution(tmp_path: Path) -> None:
 
 def test_strings_comments_and_fstring_text_survive(tmp_path: Path) -> None:
     original = (
-        '"""os.path.exists("docstring")"""\n'
+        '"""os.path.isabs("docstring")"""\n'
         "import os.path\n"
-        "# os.path.exists('comment')\n"
-        "literal = \"os.path.exists('literal')\"\n"
-        f"result = f\"os.path.exists('text'): {{os.path.exists({str(tmp_path)!r})}}\"\n"
+        "# os.path.isabs('comment')\n"
+        "literal = \"os.path.isabs('literal')\"\n"
+        f"result = f\"os.path.isabs('text'): {{os.path.isabs({str(tmp_path)!r})}}\"\n"
     )
     updated, count = fix_content(original)
     assert count > 0
     for text in (
-        '"""os.path.exists("docstring")"""',
-        "# os.path.exists('comment')",
-        "literal = \"os.path.exists('literal')\"",
-        "os.path.exists('text'): ",
+        '"""os.path.isabs("docstring")"""',
+        "# os.path.isabs('comment')",
+        "literal = \"os.path.isabs('literal')\"",
+        "os.path.isabs('text'): ",
     ):
         assert text in updated
     assert run(updated) == run(original)
@@ -318,7 +367,7 @@ def test_unicode_offsets_and_multiline_comments(
     original = (
         f'"""Module {separator} documentation."""\n'
         "import os.path\n"
-        f"label = '🐍{separator}';\fresult = os.path.exists(\n    {str(tmp_path)!r},  # keep this comment\n)\n"
+        f"label = '🐍{separator}';\fresult = os.path.isabs(\n    {str(tmp_path)!r},  # keep this comment\n)\n"
     ).replace("\n", newline)
     updated, count = fix_content(original)
     assert count > 0
@@ -333,7 +382,7 @@ def test_unicode_offsets_and_multiline_comments(
         stream.write(original)
     assert _lint_file(target) == [
         (2, "import os.path"),
-        (3, f"label = '🐍{separator}';\fresult = os.path.exists("),
+        (3, f"label = '🐍{separator}';\fresult = os.path.isabs("),
     ]
 
 
@@ -342,7 +391,7 @@ def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:
         "import os.path as osp\n"
         "result = (\n"
         "    (  # before callable 🐍 (\n"
-        "        osp.exists\n"
+        "        osp.isabs\n"
         "    )  # after callable (\n"
         f"    ({str(tmp_path)!r})\n"
         ")\n"
@@ -359,7 +408,7 @@ def test_import_follows_docstring_and_future_import(tmp_path: Path) -> None:
         '#!/usr/bin/env python3\n# coding: utf-8\n"""Module documentation.\n@literal\n"""\n'
         "from __future__ import annotations\n"
         "import os.path\n"
-        f"result = os.path.exists({str(tmp_path)!r})\n"
+        f"result = os.path.isabs({str(tmp_path)!r})\n"
     )
     updated, _ = fix_content(original)
     assert updated.startswith(
@@ -422,7 +471,7 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
 
 def test_partial_named_import_keeps_unsupported_function(tmp_path: Path) -> None:
     original = (
-        "from os.path import exists as present, splitext\n"
+        "from os.path import isabs as present, splitext\n"
         f"result = (present({str(tmp_path)!r}), splitext('dir/file.ext'))\n"
     )
     updated, count = fix_content(original)
@@ -432,14 +481,14 @@ def test_partial_named_import_keeps_unsupported_function(tmp_path: Path) -> None
 
 
 def test_wildcard_import_is_not_deleted() -> None:
-    original = "from os.path import *\nresult = exists('file')\n"
+    original = "from os.path import *\nresult = isabs('file')\n"
     assert fix_content(original) == (original, 0)
 
 
 def test_multiline_import_comments_are_preserved(tmp_path: Path) -> None:
     original = (
-        "from os.path import (\n    exists,  # important comment\n)\n"
-        f"result = exists({str(tmp_path)!r})\n"
+        "from os.path import (\n    isabs,  # important comment\n)\n"
+        f"result = isabs({str(tmp_path)!r})\n"
     )
     updated, count = fix_content(original)
     assert count == 1
@@ -459,7 +508,7 @@ def test_constructor_does_not_collide_with_local_names(tmp_path: Path, preamble:
     original = (
         preamble + "import os\n"
         "def check(Path):\n"
-        f"    return os.path.exists({str(tmp_path)!r})\n"
+        f"    return os.path.isabs({str(tmp_path)!r})\n"
         "result = check(object())\n"
     )
     updated, count = fix_content(original)
@@ -471,8 +520,8 @@ def test_constructor_does_not_collide_with_local_names(tmp_path: Path, preamble:
 @pytest.mark.parametrize(
     "source",
     [
-        "def check():\n    return os.path.exists('missing')\nimport os\nresult = check()\n",
-        "def outer():\n    def inner():\n        return p.exists('missing')\n    from os import path as p\n    return inner()\nresult = outer()\n",
+        "def check():\n    return os.path.isabs('missing')\nimport os\nresult = check()\n",
+        "def outer():\n    def inner():\n        return p.isabs('missing')\n    from os import path as p\n    return inner()\nresult = outer()\n",
     ],
 )
 def test_imports_defined_after_function_are_not_rewritten(source: str) -> None:
@@ -484,60 +533,60 @@ def test_imports_defined_after_function_are_not_rewritten(source: str) -> None:
     "body",
     [
         "import os\n"
-        "def check():\n    return os.path.exists('file')\n"
+        "def check():\n    return os.path.isabs('file')\n"
         "os = SimpleNamespace(path=custom)\nresult = check()\n",
         "import os.path as osp\n"
-        "def check():\n    return osp.exists('file')\n"
+        "def check():\n    return osp.isabs('file')\n"
         "osp = custom\nresult = check()\n",
         "osp = custom\n"
-        "def check():\n    return osp.exists('file')\n"
+        "def check():\n    return osp.isabs('file')\n"
         "result = check()\nimport os.path as osp\n",
         "import os.path as osp\n"
-        "def check():\n    return osp.exists('file')\n"
+        "def check():\n    return osp.isabs('file')\n"
         "osp = custom\nresult = check()\nimport os.path as osp\n",
         "def outer():\n"
         "    osp = custom\n"
-        "    def check():\n        return osp.exists('file')\n"
+        "    def check():\n        return osp.isabs('file')\n"
         "    result = check()\n    import os.path as osp\n    return result\n"
         "result = outer()\n",
         "osp = custom\n"
-        "check = lambda: osp.exists('file')\n"
+        "check = lambda: osp.isabs('file')\n"
         "result = check()\nimport os.path as osp\n",
         "osp = custom\n"
-        "class Check:\n    def check(self):\n        return osp.exists('file')\n"
+        "class Check:\n    def check(self):\n        return osp.isabs('file')\n"
         "result = Check().check()\nimport os.path as osp\n",
         "osp = custom\n"
         "def invoke(function):\n    global result\n    result = function()\n    return function\n"
-        "@invoke\ndef check():\n    return osp.exists('file')\n"
+        "@invoke\ndef check():\n    return osp.isabs('file')\n"
         "import os.path as osp\n",
         "import os.path as osp\n"
         "def writer():\n    global osp\n    osp = custom\n"
-        "def check():\n    return osp.exists('file')\n"
+        "def check():\n    return osp.isabs('file')\n"
         "writer()\nresult = check()\n",
         "def outer():\n    import os.path as osp\n"
         "    def writer():\n        nonlocal osp\n        osp = custom\n"
-        "    def check():\n        return osp.exists('file')\n"
+        "    def check():\n        return osp.isabs('file')\n"
         "    writer()\n    return check()\n"
         "result = outer()\n",
         "def outer():\n    import os.path as osp\n"
         "    def writer():\n        nonlocal osp\n        osp = custom\n"
-        "    writer()\n    return osp.exists('file')\n"
+        "    writer()\n    return osp.isabs('file')\n"
         "result = outer()\n",
         "import os.path as osp\n"
-        "checks = (osp.exists('file') for _ in [0])\n"
+        "checks = (osp.isabs('file') for _ in [0])\n"
         "osp = custom\nresult = next(checks)\n",
         "import os.path as osp\n"
-        "checks = ('custom' for _ in [0] if osp.exists('file') == 'custom')\n"
+        "checks = ('custom' for _ in [0] if osp.isabs('file') == 'custom')\n"
         "osp = custom\nresult = next(checks)\n",
         "import os.path as osp\n"
-        "checks = (value for _ in [0] for value in [osp.exists('file')])\n"
+        "checks = (value for _ in [0] for value in [osp.isabs('file')])\n"
         "osp = custom\nresult = next(checks)\n",
     ],
 )
 def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
     source = (
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(exists=lambda value: 'custom')\n" + body
+        "custom = SimpleNamespace(isabs=lambda value: 'custom')\n" + body
     )
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
@@ -584,30 +633,28 @@ def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> No
 @pytest.mark.parametrize(
     "source",
     [
-        "import os\ndef check():\n    return os.path.exists('missing')\nresult = check()\n",
-        "def check():\n    import os\n    return os.path.exists('missing')\nresult = check()\n",
-        "from os.path import exists\n"
-        "def check():\n    return exists('missing')\n"
-        "result = check()\n",
+        "import os\ndef check():\n    return os.path.isabs('missing')\nresult = check()\n",
+        "def check():\n    import os\n    return os.path.isabs('missing')\nresult = check()\n",
+        "from os.path import isabs\ndef check():\n    return isabs('missing')\nresult = check()\n",
         "import os\n"
         "def outer():\n    from pathlib import Path\n"
         "    def writer():\n        nonlocal Path\n        Path = lambda value: None\n"
-        "    writer()\n    return os.path.exists('missing')\n"
+        "    writer()\n    return os.path.isabs('missing')\n"
         "result = outer()\n",
         "import os.path as osp\n"
-        "checks = (osp.exists('missing') for _ in [0])\nresult = next(checks)\n",
+        "checks = (osp.isabs('missing') for _ in [0])\nresult = next(checks)\n",
         "import os.path as osp\n"
-        "checks = (value for value in [osp.exists('missing')])\n"
+        "checks = (value for value in [osp.isabs('missing')])\n"
         "osp = None\nresult = next(checks)\n",
-        "import os.path as osp\ndef check():\n    return osp.exists('missing')\nresult = check()\n",
-        "import os.path as osp\ncheck = lambda: osp.exists('missing')\nresult = check()\n",
+        "import os.path as osp\ndef check():\n    return osp.isabs('missing')\nresult = check()\n",
+        "import os.path as osp\ncheck = lambda: osp.isabs('missing')\nresult = check()\n",
         "def outer():\n    import os.path as osp\n"
-        "    def check():\n        return osp.exists('missing')\n"
+        "    def check():\n        return osp.isabs('missing')\n"
         "    return check()\n"
         "result = outer()\n",
         "from pathlib import Path as P\n"
         "import os.path as osp\n"
-        "def check():\n    return osp.exists('missing')\n"
+        "def check():\n    return osp.isabs('missing')\n"
         "P = lambda value: 'custom'\n"
         "result = check()\n",
     ],
@@ -622,7 +669,7 @@ def test_stable_deferred_imports_remain_rewritable(source: str) -> None:
 def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> None:
     source = (
         "import os.path as osp\n"
-        "def check():\n    return osp.exists('missing')\n"
+        "def check():\n    return osp.isabs('missing')\n"
         "from . import custom as osp\n"
         "result = check()\n"
         "import os.path as osp\n"
@@ -633,7 +680,7 @@ def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> No
     package = tmp_path / "example"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "custom.py").write_text("def exists(value): return 'custom'\n", encoding="utf-8")
+    (package / "custom.py").write_text("def isabs(value): return 'custom'\n", encoding="utf-8")
     for name, content in (("original", source), ("updated", updated)):
         (package / f"{name}.py").write_text(content, encoding="utf-8")
         result = subprocess.run(
@@ -655,16 +702,16 @@ def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "source",
     [
-        "import os.path; result = os.path.exists('missing')\n",
-        "import sys; import os.path\nresult = os.path.exists('missing')\n",
-        "def check():\n    import os.path\n    return os.path.exists('missing')\nresult = check()\n",
+        "import os.path; result = os.path.isabs('missing')\n",
+        "import sys; import os.path\nresult = os.path.isabs('missing')\n",
+        "def check():\n    import os.path\n    return os.path.isabs('missing')\nresult = check()\n",
         "def check():\n    import os.path\nresult = check()\n",
-        "import os.path as osp; result = osp.exists('missing'); del osp\n",
-        "from os.path import exists as present\nresult = present('missing')\ndel present\n",
-        "from os import path as paths\nresult = paths.exists('missing')\ndel paths\n",
-        "import os.path\nresult = os.path.exists('missing')\ndel os\n",
-        "import os\ndef outer():\n    from os.path import exists\n"
-        "    def inner():\n        nonlocal exists\n        exists = None\n"
+        "import os.path as osp; result = osp.isabs('missing'); del osp\n",
+        "from os.path import isabs as present\nresult = present('missing')\ndel present\n",
+        "from os import path as paths\nresult = paths.isabs('missing')\ndel paths\n",
+        "import os.path\nresult = os.path.isabs('missing')\ndel os\n",
+        "import os\ndef outer():\n    from os.path import isabs\n"
+        "    def inner():\n        nonlocal isabs\n        isabs = None\n"
         "    return inner\nouter()()\nresult = os.path.basename('a/b')\n",
         "import os\ndef outer():\n    import os.path as osp\n"
         "    def inner():\n        nonlocal osp\n        osp = None\n"
@@ -823,7 +870,7 @@ def test_import_cleanup_preserves_quoted_annotations(
 
 
 def test_crlf_and_final_newline_are_preserved() -> None:
-    original = "import os.path\r\nresult = os.path.exists('missing')\r\n"
+    original = "import os.path\r\nresult = os.path.isabs('missing')\r\n"
     updated, count = fix_content(original)
     assert count > 0
     assert updated.endswith("\r\n")
@@ -833,33 +880,34 @@ def test_crlf_and_final_newline_are_preserved() -> None:
 
 def test_invalid_source_is_not_transformed() -> None:
     with pytest.raises(SyntaxError):
-        fix_content("import os\nos.path.exists(\n")
+        fix_content("import os\nos.path.isabs(\n")
 
 
 def test_result_for_missing_path_is_false() -> None:
     # Exercise both versions against the host without relying on mocked pathlib methods.
     original = "import os\nresult = os.path.exists('definitely-not-a-pathlint-test-file')\n"
-    updated, _ = fix_content(original)
+    updated, count = fix_content(original)
+    assert (updated, count) == (original, 0)
     assert run(original) is run(updated) is False
 
 
 @pytest.mark.parametrize(
     "source",
     [
-        "import os; result = os.path.exists('missing')\n",
-        '"""Docstring."""; import os; result = os.path.exists("missing")\n',
-        "from __future__ import annotations; import os; result = os.path.exists('missing')\n",
+        "import os; result = os.path.isabs('missing')\n",
+        '"""Docstring."""; import os; result = os.path.isabs("missing")\n',
+        "from __future__ import annotations; import os; result = os.path.isabs('missing')\n",
         "import os\n"
-        "def check():\n    return os.path.exists('missing')\n"
+        "def check():\n    return os.path.isabs('missing')\n"
         "result = check()\n"
         "from pathlib import Path\n",
         "import os\n"
-        "def check():\n    return os.path.exists('missing')\n"
+        "def check():\n    return os.path.isabs('missing')\n"
         "result = check()\n"
         "import pathlib\n",
         "import os\n"
         "try:\n    raise ValueError()\n"
-        "except Exception as Path:\n    result = os.path.exists('missing')\n",
+        "except Exception as Path:\n    result = os.path.isabs('missing')\n",
     ],
 )
 def test_generated_import_is_available_without_shadowing(source: str) -> None:
@@ -874,10 +922,10 @@ def test_ambiguous_branch_binding_is_not_rewritten(condition: str) -> None:
     source = (
         "from types import SimpleNamespace\n"
         "if " + condition + ":\n"
-        "    os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "    os = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         "else:\n"
         "    import os\n"
-        "result = os.path.exists('missing')\n"
+        "result = os.path.isabs('missing')\n"
     )
     updated, count = fix_content(source)
     assert count == 0
@@ -906,7 +954,7 @@ def test_match_capture_does_not_shadow_generated_constructor() -> None:
         "import os\n"
         "match {'value': 42}:\n"
         "    case {'value': Path}:\n"
-        "        result = os.path.exists('missing')\n"
+        "        result = os.path.isabs('missing')\n"
     )
     updated, count = fix_content(source)
     assert count > 0
@@ -920,8 +968,8 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
         "def check(value):\n"
         "    match value:\n"
         "        case {'os': os}:\n"
-        "            return os.path.exists('missing')\n"
-        "result = check({'os': SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))})\n"
+        "            return os.path.isabs('missing')\n"
+        "result = check({'os': SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))})\n"
     )
     assert fix_content(source) == (source, 0)
     assert run(source) == "custom"
@@ -933,25 +981,25 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
     [
         (
             "match custom:\n    case os if False:\n        pass\n"
-            "    case _:\n        result = os.path.exists('missing')\n",
+            "    case _:\n        result = os.path.isabs('missing')\n",
             "custom",
             False,
         ),
         (
             "match custom:\n    case os if False:\n        import os\n"
-            "result = os.path.exists('missing')\n",
+            "result = os.path.isabs('missing')\n",
             "custom",
             False,
         ),
         (
             "match 1:\n    case _ if (os := custom) and False:\n        pass\n"
-            "    case _:\n        result = os.path.exists('missing')\n",
+            "    case _:\n        result = os.path.isabs('missing')\n",
             "custom",
             False,
         ),
         (
             "match 1:\n    case 0:\n        os = custom\n"
-            "    case _:\n        result = os.path.exists('missing')\n",
+            "    case _:\n        result = os.path.isabs('missing')\n",
             False,
             True,
         ),
@@ -960,7 +1008,7 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
 def test_failed_match_guards_retain_bindings(match: str, expected: object, changes: bool) -> None:
     source = (
         "import os\nfrom types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n" + match
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n" + match
     )
     updated, count = fix_content(source)
     assert bool(count) is changes
@@ -973,33 +1021,33 @@ def test_failed_match_guards_retain_bindings(match: str, expected: object, chang
         "try:\n    os = custom\nexcept Exception:\n    import os\n",
         "os = custom\nfor item in []:\n    import os\n",
         "os = custom\nwhile False:\n    import os\n",
-        "os = custom\ntry:\n    pass\nexcept Exception:\n    import os\nfinally:\n    result = os.path.exists('missing')\n",
+        "os = custom\ntry:\n    pass\nexcept Exception:\n    import os\nfinally:\n    result = os.path.isabs('missing')\n",
         "import os\ntry:\n    os = custom\n    raise ValueError()\n    import os\n"
-        "except ValueError:\n    result = os.path.exists('missing')\n",
+        "except ValueError:\n    result = os.path.isabs('missing')\n",
         "import os\ntry:\n    try:\n        raise ValueError()\n"
         "    except ValueError:\n        os = custom\n        raise TypeError()\n        import os\n"
-        "    finally:\n        result = os.path.exists('missing')\n"
+        "    finally:\n        result = os.path.isabs('missing')\n"
         "except TypeError:\n    pass\n",
         "import os\ntry:\n    try:\n        pass\n"
         "    except ValueError:\n        pass\n"
         "    else:\n        os = custom\n        raise TypeError()\n        import os\n"
-        "    finally:\n        result = os.path.exists('missing')\n"
+        "    finally:\n        result = os.path.isabs('missing')\n"
         "except TypeError:\n    pass\n",
         "import os\n[(os := custom) for item in [0]]\n",
-        "import os\n{(os := custom).path.exists('missing') for item in [0]}\n",
+        "import os\n{(os := custom).path.isabs('missing') for item in [0]}\n",
         "import os\n{item: (os := custom) for item in [0]}\n",
         "import os\n[[(os := custom) for item in [0]] for outer in [0]]\n",
         "import os\nsequence = ((os := custom) for item in [0])\nnext(sequence)\n",
         "def check():\n    import os\n    [(os := custom) for item in [0]]\n    return os\nos = check()\n",
-        "import os\n[(os.path.exists('missing'), (os := custom)) for item in [0, 1]]\n",
+        "import os\n[(os.path.isabs('missing'), (os := custom)) for item in [0, 1]]\n",
     ],
 )
 def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
     source = (
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         + block
-        + "result = os.path.exists('missing')\n"
+        + "result = os.path.isabs('missing')\n"
     )
     updated, count = fix_content(source)
     assert count == 0
@@ -1017,7 +1065,7 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
         (
             "[]",
             "import os",
-            "result = os.path.exists('missing')",
+            "result = os.path.isabs('missing')",
             "return result",
             "custom",
             False,
@@ -1025,7 +1073,7 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
         (
             "[]",
             "pass",
-            "import os\n        result = os.path.exists('missing')",
+            "import os\n        result = os.path.isabs('missing')",
             "return result",
             False,
             False,
@@ -1034,7 +1082,7 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
             "[True]",
             "break",
             "import os",
-            "return os.path.exists('missing')",
+            "return os.path.isabs('missing')",
             "custom",
             False,
         ),
@@ -1042,7 +1090,7 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
             "[True]",
             "break\n        import os",
             "import os",
-            "return os.path.exists('missing')",
+            "return os.path.isabs('missing')",
             "custom",
             False,
         ),
@@ -1065,7 +1113,7 @@ def test_loop_else_bindings_preserve_results(
         "        yield value\n"
         "async def check():\n"
         f"    values = {values}\n"
-        "    os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "    os = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         f"    {loop}:\n"
         f"        {body}\n"
         "    else:\n"
@@ -1086,11 +1134,11 @@ def test_loop_header_bindings_apply_before_else(loop: str) -> None:
     source = (
         "import os\n"
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         f"{loop}:\n"
         "    pass\n"
         "else:\n"
-        "    result = os.path.exists('missing')\n"
+        "    result = os.path.isabs('missing')\n"
     )
     updated, count = fix_content(source)
     assert count == 0
@@ -1107,7 +1155,7 @@ def test_loop_header_bindings_apply_before_else(loop: str) -> None:
     [
         (
             "import os as alias\nresults = []",
-            "results.append(alias.path.exists('missing'))\nalias = custom",
+            "results.append(alias.path.isabs('missing'))\nalias = custom",
             "pass",
             "return results",
             [False, "custom"],
@@ -1115,8 +1163,8 @@ def test_loop_header_bindings_apply_before_else(loop: str) -> None:
         ),
         (
             "import os\nfrom pathlib import Path as constructor\nresults = []",
-            "results.append(os.path.exists('missing'))\n"
-            "constructor = lambda value: SimpleNamespace(exists=lambda: 'custom')",
+            "results.append(os.path.isabs('missing'))\n"
+            "constructor = lambda value: SimpleNamespace(is_absolute=lambda: 'custom')",
             "pass",
             "return results",
             [False, False],
@@ -1126,7 +1174,7 @@ def test_loop_header_bindings_apply_before_else(loop: str) -> None:
             "import os",
             "os = custom\nbreak\nimport os",
             "import os",
-            "return os.path.exists('missing')",
+            "return os.path.isabs('missing')",
             "custom",
             False,
         ),
@@ -1149,7 +1197,7 @@ def test_loop_rebindings_preserve_results(
         "        yield value\n"
         "async def check():\n"
         "    values = [True, True]\n"
-        "    custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "    custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         + indent(preamble + "\n", "    ")
         + f"    {loop}:\n"
         + indent(body + "\n", "        ")
@@ -1173,10 +1221,10 @@ def test_while_test_rebinding_preserves_results(
     source = (
         "import os as alias\n"
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         "values = [True, True]\n"
         "result = 0\n"
-        f"while alias.path.exists('missing') is False{binding_expression} "
+        f"while alias.path.isabs('missing') is False{binding_expression} "
         "and values and values.pop():\n"
         "    result += 1\n" + binding_statement
     )
@@ -1198,10 +1246,10 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
     source = (
         "import os as alias\n"
         "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
         "result = []\n"
         "for value in [1, 2]:\n"
-        "    result.append(alias.path.exists('missing'))\n" + indent(definition + "\n", "    ")
+        "    result.append(alias.path.isabs('missing'))\n" + indent(definition + "\n", "    ")
     )
     updated, count = fix_content(source)
     assert count == 0

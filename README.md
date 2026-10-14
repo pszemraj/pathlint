@@ -210,8 +210,8 @@ imports, nested calls, and expressions inside f-strings are supported. Pathlib
 imports are placed after module docstrings and future imports, and existing
 Pathlib aliases are reused where possible.
 
-Supported calls include `exists`, `isfile`, `isdir`, `isabs`, `join`, `basename`,
-`dirname`, and `expanduser`. Unsupported references retain their imports.
+Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`.
+Unsupported references retain their imports.
 Keyword arguments, starred arguments, literal file descriptors or byte paths,
 and known inexact literal forms are left unchanged. These include empty paths,
 trailing separators, and named-user expansion. Calls with uncertain branch,
@@ -221,7 +221,9 @@ annotations or `__all__` may reference them, and avoid constructors affected by
 Pathlib mutations. Sources containing wildcard imports are left unchanged because
 their exports can overwrite names used by a fix. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
-or returned incorrect values.
+or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
+unchanged: on supported Python versions, their Pathlib replacements can raise
+filesystem errors where `os.path` returns `False`.
 
 **Review every diff and test the result.** Pathlib normalizes path strings, so
 conversions involving variable values can still affect string-sensitive code.

@@ -13,9 +13,6 @@ from pathlib import Path
 from pathlint.linter import OSPathDetector, _ScopeNames
 
 METHODS = {
-    "exists": "exists()",
-    "isfile": "is_file()",
-    "isdir": "is_dir()",
     "isabs": "is_absolute()",
     "basename": "name",
     "dirname": "parent",

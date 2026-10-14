@@ -17,7 +17,7 @@ import pytest
 import pathlint
 from pathlint import cli
 
-OFFENDING = "import os\nvalue = os.path.exists('example')\n"
+OFFENDING = "import os\nvalue = os.path.isabs('example')\n"
 
 
 def test_main_module_import_does_not_run_cli(
@@ -80,7 +80,7 @@ def test_default_and_legacy_checks(
     assert cli.main(args) == 1
     output = capsys.readouterr()
     assert output.out == (
-        "sample.py:2: PL001 os.path usage: value = os.path.exists('example')\n"
+        "sample.py:2: PL001 os.path usage: value = os.path.isabs('example')\n"
         "Found 1 violation in 1 of 1 files checked.\n"
     )
     assert output.err == ""
@@ -171,7 +171,7 @@ def test_json_reports_findings_syntax_and_missing_inputs(workspace: Path) -> Non
             "line": 2,
             "code": "PL001",
             "message": "Use pathlib instead of os.path",
-            "source": "value = os.path.exists('example')",
+            "source": "value = os.path.isabs('example')",
         }
     ]
     assert {entry["path"] for entry in report["errors"]} == {"broken.py", "missing.py"}
@@ -258,9 +258,9 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
         "+++ sample.py (fixed)\n"
         "@@ -1,2 +1,3 @@\n"
         " import os\n"
-        "-value = os.path.exists('example')\n"
+        "-value = os.path.isabs('example')\n"
         "+from pathlib import Path\n"
-        "+value = Path('example').exists()\n"
+        "+value = Path('example').is_absolute()\n"
     )
     assert chr(92) + "033" not in output.out
     assert "Would make" not in output.out
@@ -271,10 +271,35 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
         ["--fix", "sample.py", *legacy_flags] if legacy_flags is not None else ["fix", "sample.py"]
     )
     assert cli.main([*args, "--quiet"]) == 0
-    assert "Path('example').exists()" in path.read_text(encoding="utf-8")
+    assert "Path('example').is_absolute()" in path.read_text(encoding="utf-8")
     assert capsys.readouterr() == ("", "")
     assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 0
     assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])
+@pytest.mark.parametrize("named_import", [False, True])
+def test_predicate_findings_are_not_autofixed(
+    workspace: Path,
+    capsys: pytest.CaptureFixture[str],
+    method: str,
+    named_import: bool,
+) -> None:
+    source = (
+        f"from os.path import {method} as probe\nvalue = probe('example')\n"
+        if named_import
+        else f"import os\nvalue = os.path.{method}('example')\n"
+    )
+    path = write_file(workspace, "sample.py", source)
+    original = path.read_bytes()
+    assert cli.main(["check", "--quiet"]) == 1
+    assert "PL001" in capsys.readouterr().out
+    for args in (["fix", "--dry-run", "--quiet"], ["fix", "--quiet"]):
+        assert cli.main(args) == 0
+        assert capsys.readouterr() == ("", "")
+        assert path.read_bytes() == original
+    assert cli.main(["check", "--quiet"]) == 1
+    assert "PL001" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("no_color", [False, True])
@@ -294,8 +319,8 @@ def test_diff_color_requires_terminal_and_respects_option(
     assert (chr(27) in output) is not no_color
     assert chr(92) + "033" not in output
     if not no_color:
-        assert f"{chr(27)}[91m-value = os.path.exists('example'){chr(27)}[0m\n" in output
-        assert f"{chr(27)}[92m+value = Path('example').exists(){chr(27)}[0m\n" in output
+        assert f"{chr(27)}[91m-value = os.path.isabs('example'){chr(27)}[0m\n" in output
+        assert f"{chr(27)}[92m+value = Path('example').is_absolute(){chr(27)}[0m\n" in output
 
 
 @pytest.mark.parametrize("command", ["check", "fix"])
@@ -536,9 +561,9 @@ def test_fix_crlf_preview_has_clean_lines_and_preserves_file_newlines(
         "+++ sample.py (fixed)",
         "@@ -1,2 +1,3 @@",
         " import os",
-        "-value = os.path.exists('example')",
+        "-value = os.path.isabs('example')",
         "+from pathlib import Path",
-        "+value = Path('example').exists()",
+        "+value = Path('example').is_absolute()",
     ]
     assert path.read_bytes() == original
     assert cli.main(["fix", "--quiet"]) == 0
@@ -553,7 +578,7 @@ def test_preview_preserves_final_newline_information(
 ) -> None:
     if shutil.which("git") is None:
         pytest.skip("Git is required to apply preview patches")
-    source = "import os\nvalue = os.path.exists('example')" + suffix
+    source = "import os\nvalue = os.path.isabs('example')" + suffix
     path = write_file(workspace, "sample.py", source)
     original = path.read_bytes()
     preview = invoke(workspace, "fix", "sample.py", "--dry-run", "--quiet")
@@ -570,7 +595,7 @@ def test_preview_preserves_final_newline_information(
         check=False,
     )
     assert applied.returncode == 0, applied.stderr
-    expected = "import os\nfrom pathlib import Path\nvalue = Path('example').exists()" + suffix
+    expected = "import os\nfrom pathlib import Path\nvalue = Path('example').is_absolute()" + suffix
     assert path.read_bytes() == expected.encode()
     assert invoke(workspace, "fix", "sample.py", "--dry-run", "--quiet").returncode == 0
 
@@ -594,7 +619,7 @@ def test_output_encoding_preserves_unicode_data_and_command_status(
     workspace: Path, encoding: str
 ) -> None:
     name = "café_🐍.py"
-    source = "import os\nvalue = os.path.exists('café/🐍')\n"
+    source = "import os\nvalue = os.path.isabs('café/🐍')\n"
     path = write_file(workspace, name, source)
     original = path.read_bytes()
     displayed_name = name.encode(encoding, errors="backslashreplace").decode(encoding)

@@ -52,17 +52,17 @@ class TestAddPathlibImport:
 class TestFixFileBasic:
     """Test basic fix_file functionality."""
 
-    def test_fix_simple_os_path_exists(self, tmp_path: Path) -> None:
-        """Fix a simple os.path.exists call."""
+    def test_fix_simple_os_path_isabs(self, tmp_path: Path) -> None:
+        """Fix a simple os.path.isabs call."""
         test_file = tmp_path / "test.py"
-        test_file.write_text("import os.path\nif os.path.exists('file'):\n    pass\n")
+        test_file.write_text("import os.path\nif os.path.isabs('file'):\n    pass\n")
 
         count = fix_file(test_file, dry_run=False)
-        assert count == 2  # import + exists call
+        assert count == 2  # import + isabs call
 
         result = test_file.read_text()
         assert "from pathlib import Path" in result
-        assert "Path('file').exists()" in result
+        assert "Path('file').is_absolute()" in result
         assert "os.path" not in result
 
     def test_fix_multiple_replacements(self, tmp_path: Path) -> None:
@@ -70,8 +70,8 @@ class TestFixFileBasic:
         test_file = tmp_path / "test.py"
         test_file.write_text(
             "import os.path\n"
-            "x = os.path.exists('a')\n"
-            "y = os.path.isfile('b')\n"
+            "x = os.path.isabs('a')\n"
+            "y = os.path.basename('b')\n"
             "z = os.path.join('c', 'd')\n"
         )
 
@@ -79,14 +79,14 @@ class TestFixFileBasic:
         assert count == 4  # import + 3 calls
 
         result = test_file.read_text()
-        assert "Path('a').exists()" in result
-        assert "Path('b').is_file()" in result
+        assert "Path('a').is_absolute()" in result
+        assert "Path('b').name" in result
         assert "str(Path('c', 'd'))" in result
 
     def test_dry_run_no_modification(self, tmp_path: Path) -> None:
         """Dry-run should not modify file."""
         test_file = tmp_path / "test.py"
-        original = "import os.path\nif os.path.exists('file'):\n    pass\n"
+        original = "import os.path\nif os.path.isabs('file'):\n    pass\n"
         test_file.write_text(original)
 
         count = fix_file(test_file, dry_run=True)
@@ -118,7 +118,7 @@ class TestFixFileComplex:
         test_file = tmp_path / "test.py"
         test_file.write_text(
             "from os import path\n"
-            "if path.exists('file'):\n"
+            "if path.isabs('file'):\n"
             "    x = path.join('a', 'b')\n"
             "    print(path.basename('test'))\n"
         )
@@ -128,7 +128,7 @@ class TestFixFileComplex:
 
         result = test_file.read_text()
         assert "from pathlib import Path" in result
-        assert "Path('file').exists()" in result
+        assert "Path('file').is_absolute()" in result
         assert "str(Path('a', 'b'))" in result
         assert "Path('test').name" in result
 
@@ -138,7 +138,7 @@ class TestFixFileComplex:
         test_file.write_text(
             "import os.path\n"
             "def process_file(filepath):\n"
-            "    if os.path.exists(filepath):\n"
+            "    if os.path.isabs(filepath):\n"
             "        name = os.path.basename(filepath)\n"
             "        directory = os.path.dirname(filepath)\n"
             "        full = os.path.abspath(filepath)\n"
@@ -150,7 +150,7 @@ class TestFixFileComplex:
         assert count >= 4
 
         result = test_file.read_text()
-        assert "Path(filepath).exists()" in result
+        assert "Path(filepath).is_absolute()" in result
         assert "Path(filepath).name" in result
         assert "str(Path(filepath).parent)" in result
         assert (
@@ -166,7 +166,7 @@ class TestFixFileComplex:
             "# This is a comment\n"
             "def foo():\n"
             '    """Docstring."""\n'
-            "    x = os.path.exists('test')\n"
+            "    x = os.path.isabs('test')\n"
             "    return x\n"
             "\n"
             "class Bar:\n"
@@ -212,11 +212,7 @@ class TestFixFileComplex:
         """File with multiple imports should add pathlib correctly."""
         test_file = tmp_path / "test.py"
         test_file.write_text(
-            "import sys\n"
-            "import os.path\n"
-            "from typing import Optional\n"
-            "\n"
-            "x = os.path.exists('test')\n"
+            "import sys\nimport os.path\nfrom typing import Optional\n\nx = os.path.isabs('test')\n"
         )
 
         fix_file(test_file, dry_run=False)
@@ -236,16 +232,16 @@ class TestFixFileEdgeCases:
     def test_multiline_os_path_call(self, tmp_path: Path) -> None:
         """Multiline os.path calls should be auto-fixed."""
         test_file = tmp_path / "multiline.py"
-        test_file.write_text("import os.path\nresult = os.path.exists(\n    'test.txt'\n)\n")
+        test_file.write_text("import os.path\nresult = os.path.isabs(\n    'test.txt'\n)\n")
 
         count = fix_file(test_file, dry_run=False)
         assert count >= 2
 
         result = test_file.read_text()
-        assert "os.path.exists" not in result
+        assert "os.path.isabs" not in result
         assert "from pathlib import Path" in result
         assert "Path(" in result
-        assert ").exists()" in result
+        assert ").is_absolute()" in result
 
     def test_multiline_join_call(self, tmp_path: Path) -> None:
         """Multiline os.path.join calls should be auto-fixed."""
@@ -359,7 +355,7 @@ class TestFixFileEdgeCases:
     def test_file_with_syntax_error(self, tmp_path: Path) -> None:
         """Handle files with syntax errors gracefully."""
         test_file = tmp_path / "broken.py"
-        test_file.write_text("import os.path\nif os.path.exists(  # missing closing")
+        test_file.write_text("import os.path\nif os.path.isabs(  # missing closing")
 
         # Should not crash
         count = fix_file(test_file, dry_run=False)
@@ -373,7 +369,7 @@ class TestFixFileEdgeCases:
             "# -*- coding: utf-8 -*-\n"
             "import os.path\n"
             "# Comment with emoji 🐍\n"
-            "x = os.path.exists('файл')  # Cyrillic filename\n",
+            "x = os.path.isabs('файл')  # Cyrillic filename\n",
             encoding="utf-8",
         )
 
@@ -381,7 +377,7 @@ class TestFixFileEdgeCases:
         assert count >= 2
 
         result = test_file.read_text(encoding="utf-8")
-        assert "Path('файл').exists()" in result
+        assert "Path('файл').is_absolute()" in result
         assert "🐍" in result
 
     def test_already_using_pathlib(self, tmp_path: Path) -> None:
@@ -404,7 +400,7 @@ class TestFixFileEdgeCases:
             "import os.path\n"
             "\n"
             "x = Path('a').exists()\n"
-            "y = os.path.exists('b')\n"
+            "y = os.path.isabs('b')\n"
         )
 
         count = fix_file(test_file, dry_run=False)
@@ -413,7 +409,7 @@ class TestFixFileEdgeCases:
 
         result = test_file.read_text()
         assert "Path('a').exists()" in result
-        assert "Path('b').exists()" in result
+        assert "Path('b').is_absolute()" in result
 
 
 class TestReplacementOrder:

@@ -342,7 +342,7 @@ def test_git_listing_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyP
 def test_git_unreadable_untracked_directories_report_warnings_and_continue(repo: Path) -> None:
     blocked = [repo / "blocked", repo / "quoted'\nuni-ä"]
     wanted = write(repo, "z.py")
-    source = "import os\nos.path.exists('example')\n"
+    source = "import os\nos.path.isabs('example')\n"
     wanted.write_text(source, encoding="utf-8")
     for directory in blocked:
         write(directory, "hidden.py")
@@ -449,7 +449,7 @@ def test_git_unreadable_candidates_honor_exclusions_and_continue(
 ) -> None:
     blocked_file = write(repo, "blocked/a.py")
     wanted = write(repo, "z.py")
-    source = "import os\nos.path.exists('example')\n"
+    source = "import os\nos.path.isabs('example')\n"
     wanted.write_text(source, encoding="utf-8")
     git(repo, "add", "blocked/a.py", "z.py")
     write(repo, "blocked/untracked.py").write_text(source, encoding="utf-8")
@@ -512,7 +512,7 @@ def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
     link = repo / "a_link.py"
     link.symlink_to(target)
     wanted = write(repo, "z.py")
-    source = "import os\nos.path.exists('example')\n"
+    source = "import os\nos.path.isabs('example')\n"
     wanted.write_text(source, encoding="utf-8")
     git(repo, "add", "blocked/x.py", "a_link.py", "z.py")
     blocked = target.parent
