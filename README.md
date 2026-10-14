@@ -209,7 +209,8 @@ Supported calls include `exists`, `isfile`, `isdir`, `isabs`, `join`, `basename`
 `dirname`, and `expanduser`. Unsupported references retain their imports.
 Keyword arguments, starred arguments, literal byte paths, and some known
 inexact literal forms are left unchanged. Calls with uncertain branch or loop
-bindings are also left unchanged. `abspath`, `splitext`, `sep`, and
+bindings and methods whose `os.path` attributes are assigned or deleted are also
+left unchanged. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
 or returned incorrect values.
 

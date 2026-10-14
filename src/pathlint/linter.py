@@ -131,6 +131,8 @@ class OSPathDetector(ast.NodeVisitor):
         self.scope_kinds = ["module"]
         self.os_imported = False
         self.path_aliases: set[str] = set()
+        self.mutated_attributes: set[str] = set()
+        self.import_origins: dict[str, set[str]] = defaultdict(set)
         self.deferred: list[
             tuple[
                 ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
@@ -173,25 +175,45 @@ class OSPathDetector(ast.NodeVisitor):
     def resolve(self, node: ast.AST) -> str | None:
         """Resolve an imported name or attribute to its original spelling.
 
-        :return str | None: Qualified import spelling, or None if unresolved.
+        :return str | None: Qualified import spelling, or None if unresolved or mutated.
         """
+        origin = None
         if isinstance(node, ast.Name):
-            return self.resolve_name(node.id)
-        if isinstance(node, ast.Attribute):
+            origin = self.resolve_name(node.id)
+        elif isinstance(node, ast.Attribute):
             parent = self.resolve(node.value)
-            return f"{parent}.{node.attr}" if parent else None
-        return None
+            origin = f"{parent}.{node.attr}" if parent else None
+        if origin and any(
+            origin == changed or origin.startswith(changed + ".")
+            for changed in self.mutated_attributes
+        ):
+            return None
+        return origin
 
     def _record(self, node: ast.AST) -> None:
         """Record the stripped source line for a node with a valid line number."""
         if hasattr(node, "lineno") and 0 < node.lineno <= len(self.lines):
             self.offenses[node.lineno].add(self.lines[node.lineno - 1].strip())
 
+    def _mutation_origins(self, node: ast.AST) -> set[str]:
+        """Retain possible import origins for writes without reviving read bindings.
+
+        :param ast.AST node: Attribute target or its base expression.
+        :return set[str]: Previously imported spellings that the target may mutate.
+        """
+        if isinstance(node, ast.Name):
+            return self.import_origins.get(node.id, set())
+        if isinstance(node, ast.Attribute):
+            return {f"{origin}.{node.attr}" for origin in self._mutation_origins(node.value)}
+        return set()
+
     def visit_Import(self, node: ast.Import) -> None:
         """Bind imported modules and record direct os.path imports."""
         for alias in node.names:
             name = alias.asname or alias.name.split(".")[0]
-            self.scopes[-1][name] = alias.name if alias.asname else alias.name.split(".")[0]
+            origin = alias.name if alias.asname else alias.name.split(".")[0]
+            self.scopes[-1][name] = origin
+            self.import_origins[name].add(origin)
             if alias.name == "os":
                 self.os_imported = True
             elif alias.name == "os.path" or alias.name.startswith("os.path."):
@@ -204,6 +226,8 @@ class OSPathDetector(ast.NodeVisitor):
             name = alias.asname or alias.name
             origin = f"{node.module}.{alias.name}" if node.module and not node.level else None
             self.scopes[-1][name] = origin
+            if origin:
+                self.import_origins[name].add(origin)
             if origin and (origin == "os.path" or origin.startswith("os.path.")):
                 self._record(node)
                 self.path_aliases.add(name)
@@ -218,7 +242,7 @@ class OSPathDetector(ast.NodeVisitor):
             self.scopes[-1][node.id] = None
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        """Record loaded attributes resolving to os.path and visit their base."""
+        """Record loaded os.path attributes and invalidate assigned or deleted origins."""
         origin = self.resolve(node)
         if (
             isinstance(node.ctx, ast.Load)
@@ -227,6 +251,14 @@ class OSPathDetector(ast.NodeVisitor):
         ):
             self._record(node)
         self.generic_visit(node)
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            # Conditional imports can look certain in sequential traversal. Retain
+            # earlier origins conservatively for mutations, never ordinary reads.
+            self.mutated_attributes.update(
+                possible
+                for possible in self._mutation_origins(node)
+                if possible == "os.path" or possible.startswith("os.path.")
+            )
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Visit definition expressions and defer the body for lexical analysis."""

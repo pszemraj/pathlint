@@ -520,11 +520,16 @@ def _clean_imports(content: str) -> tuple[str, int]:
 def fix_content(content: str) -> tuple[str, int]:
     """Rewrite supported imported os.path calls and update their imports.
 
+    Collect attribute mutations before editing calls in deferred function bodies.
+
     :param str content: Python source to parse and transform.
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
+    detector = OSPathDetector(content.splitlines())
+    detector.visit(tree)
     fixer = _PathFixer(content, tree)
+    fixer.mutated_attributes.update(detector.mutated_attributes)
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))
     updated, import_count = _clean_imports(updated)

@@ -1,6 +1,8 @@
 """Behavioral regressions for AST-backed, source-preserving transformations."""
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 from textwrap import indent
 
@@ -581,3 +583,120 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
     assert count == 0
     assert updated == source
     assert run(updated) == run(source) == [False, "custom"]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected", "changes"),
+    [
+        (
+            "osp.basename = lambda value: 'custom'\nresult = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "osp.basename: object = lambda value: 'custom'\nresult = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "class Replacement:\n"
+            "    def __radd__(self, previous):\n        return lambda value: 'custom'\n"
+            "osp.basename += Replacement()\nresult = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "import os.path as other\nosp.basename = lambda value: 'custom'\n"
+            "result = other.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "osp.basename = lambda value: 'custom'\nimport os.path as osp\n"
+            "result = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "osp.basename = lambda value: 'custom'\nfrom os.path import basename as present\n"
+            "result = present('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "del osp.basename\ntry:\n    result = osp.basename('directory/file')\n"
+            "except AttributeError:\n    result = 'missing'\n",
+            "missing",
+            False,
+        ),
+        (
+            "def reader():\n    return osp.basename('directory/file')\n"
+            "def writer():\n    osp.basename = lambda value: 'custom'\n"
+            "writer()\nresult = reader()\n",
+            "custom",
+            False,
+        ),
+        (
+            "import os\nos.path = SimpleNamespace(basename=lambda value: 'custom')\n"
+            "result = os.path.basename('directory/file')\n",
+            "custom",
+            True,  # The unused osp import is removed; the customized call remains.
+        ),
+        (
+            "osp.basename = lambda value: 'custom'\nresult = osp.dirname('directory/file')\n",
+            "directory",
+            True,
+        ),
+        (
+            "if False:\n    osp = object()\n"
+            "osp.basename = lambda value: 'custom'\nimport os.path as other\n"
+            "result = other.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "if False:\n    import math as osp\n"
+            "osp.basename = lambda value: 'custom'\nimport os.path as other\n"
+            "result = other.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "import os as system\nif False:\n    system = object()\n"
+            "system.path.basename = lambda value: 'custom'\n"
+            "result = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        (
+            "if False:\n    osp = object()\ndel osp.basename\nimport os.path as other\n"
+            "try:\n    result = other.basename('directory/file')\n"
+            "except AttributeError:\n    result = 'missing'\n",
+            "missing",
+            False,
+        ),
+    ],
+)
+def test_mutated_path_attributes_preserve_results(body: str, expected: str, changes: bool) -> None:
+    source = "import os.path as osp\nfrom types import SimpleNamespace\n" + body
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    # Isolate module mutations and restore before subprocess coverage shuts down.
+    program = (
+        "import os, sys\n"
+        "original_path = os.path\noriginal_basename = original_path.basename\n"
+        "namespace = {}\ntry:\n"
+        "    exec(compile(sys.argv[1], '<fixture>', 'exec'), namespace)\n"
+        "    print(namespace['result'])\nfinally:\n"
+        "    os.path = original_path\n    original_path.basename = original_basename\n"
+    )
+    for content in (source, updated):
+        result = subprocess.run(
+            [sys.executable, "-c", program, content],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected + "\n"
+        assert result.stderr == ""

@@ -241,6 +241,92 @@ def test_multiple_usages_on_one_line_keep_exact_source_once() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "osp.basename = custom",
+        "osp.basename: object = custom",
+        "osp.basename += custom",
+        "del osp.basename",
+    ],
+)
+def test_attribute_mutations_invalidate_all_aliases_and_reimports(mutation: str) -> None:
+    source = (
+        "import os.path as osp\n"
+        "import os as system\n"
+        "from os import path as other\n"
+        f"{mutation}\n"
+        "import os.path as imported_again\n"
+        "from os.path import basename as named_again\n"
+    )
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {"os.path.basename"}
+    for expression in (
+        "osp.basename",
+        "system.path.basename",
+        "other.basename",
+        "imported_again.basename",
+        "named_again",
+    ):
+        assert detector.resolve(ast.parse(expression, mode="eval").body) is None
+    assert detector.resolve(ast.parse("osp.dirname", mode="eval").body) == "os.path.dirname"
+
+
+def test_replacing_path_module_invalidates_descendants() -> None:
+    source = "import os\nfrom os import path as osp\nos.path = custom\nimport os as system"
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {"os.path"}
+    for expression in ("osp", "osp.basename", "os.path.exists", "system.path.dirname"):
+        assert detector.resolve(ast.parse(expression, mode="eval").body) is None
+
+
+def test_deferred_method_mutations_are_collected() -> None:
+    source = """
+        import os.path as osp
+        def reader():
+            return osp.basename('directory/file')
+        def writer():
+            osp.basename = custom
+        writer()
+        result = reader()
+    """
+    source = dedent(source).strip()
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {"os.path.basename"}
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "attribute"),
+    [
+        ("import os.path as alias", "alias.basename"),
+        ("from os import path as alias", "alias.basename"),
+        ("import os as alias", "alias.path.basename"),
+    ],
+)
+@pytest.mark.parametrize("shadow", ["alias = object()", "import math as alias"])
+def test_uncertain_alias_mutations_retain_possible_import_origin(
+    import_statement: str, attribute: str, shadow: str
+) -> None:
+    source = (
+        f"{import_statement}\n"
+        "if False:\n"
+        f"    {shadow}\n"
+        f"{attribute} = custom\n"
+        "import os.path as other\n"
+    )
+    detector = OSPathDetector(source.splitlines())
+    detector.visit(ast.parse(source))
+    assert detector.mutated_attributes == {"os.path.basename"}
+    assert detector.resolve(ast.parse("other.basename", mode="eval").body) is None
+    assert detector.resolve(ast.parse("other.dirname", mode="eval").body) == "os.path.dirname"
+    # Historical imports establish possible mutation targets, not readable bindings.
+    expected_binding = "math" if shadow.startswith("import") else None
+    assert detector.resolve(ast.parse("alias", mode="eval").body) == expected_binding
+
+
 def test_function_resolves_import_defined_after_definition() -> None:
     source = """
         def f():
