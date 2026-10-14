@@ -282,13 +282,13 @@ class OSPathDetector(ast.NodeVisitor):
         """Visit class definition expressions and the body in its own scope."""
         for expression in (*node.decorator_list, *node.bases, *node.keywords):
             self.visit(expression)
-        self.scopes[-1][node.name] = None
         self.scopes.append({})
         self.scope_kinds.append("class")
         for statement in node.body:
             self.visit(statement)
         self.scopes.pop()
         self.scope_kinds.pop()
+        self.scopes[-1][node.name] = None
 
     def visit_Assign(self, node: ast.Assign) -> None:
         """Visit the assigned value before updating target bindings."""
@@ -297,11 +297,16 @@ class OSPathDetector(ast.NodeVisitor):
             self.visit(target)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        """Visit the annotation and optional value before updating the target."""
-        self.visit(node.annotation)
+        """Visit the value and actual assignment before its annotation expression."""
         if node.value:
             self.visit(node.value)
-        self.visit(node.target)
+            self.visit(node.target)
+        elif isinstance(node.target, ast.Attribute):
+            self.visit(node.target.value)
+        elif isinstance(node.target, ast.Subscript):
+            self.visit(node.target.value)
+            self.visit(node.target.slice)
+        self.visit(node.annotation)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         """Visit a named expression's value before updating its target binding."""

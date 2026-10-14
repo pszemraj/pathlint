@@ -8,6 +8,7 @@ from textwrap import dedent
 
 import pytest
 
+from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector
 
 
@@ -148,6 +149,39 @@ def test_class_import_does_not_escape_into_methods() -> None:
                 return os.path.exists('file')
     """
     assert set(offenses(source)) == {3}
+
+
+def test_class_name_is_bound_after_its_body() -> None:
+    source = "import os\nclass os:\n    result = os.path.exists('file')"
+    assert set(offenses(source)) == {3}
+
+
+@pytest.mark.parametrize("target", ["os", "os.path.exists", "os.path.__dict__['exists']"])
+def test_annotation_only_target_does_not_assign(target: str) -> None:
+    source = f"import os\n{target}: object\nos.path.exists('file')"
+    assert 3 in offenses(source)
+
+
+def test_annotation_only_function_name_remains_local() -> None:
+    source = "import os\ndef f():\n    os: object\n    os.path.exists('file')"
+    assert offenses(source) == {}
+
+
+def test_annotated_assignment_binds_before_annotation() -> None:
+    source = (
+        "import os\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "os: os.path.exists('file') = custom\n"
+        "result = __annotations__['os']\n"
+    )
+    assert offenses(source) == {}
+    updated, count = fix_content(source)
+    assert count == 0
+    for content in (source, updated):
+        namespace = {}
+        exec(compile(content, "<annotation>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == "custom"
 
 
 @pytest.mark.parametrize(
