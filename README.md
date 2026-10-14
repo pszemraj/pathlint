@@ -218,7 +218,8 @@ trailing separators, and named-user expansion. Calls with uncertain branch,
 exception, match, or loop bindings and methods whose `os.path` attributes are
 assigned or deleted are also left unchanged. Fixes retain imports when
 annotations or `__all__` may reference them, and avoid constructors affected by
-Pathlib mutations. `abspath`, `splitext`, `sep`, and
+Pathlib mutations. Sources containing wildcard imports are left unchanged because
+their exports can overwrite names used by a fix. `abspath`, `splitext`, `sep`, and
 `pathsep` are not rewritten because their former replacements changed behavior
 or returned incorrect values.
 

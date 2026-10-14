@@ -665,6 +665,12 @@ def fix_content(content: str) -> tuple[str, int]:
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
+    if any(
+        isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
+        for node in ast.walk(tree)
+    ):
+        # Unknown exports can overwrite both imported and generated constructor aliases.
+        return content, 0
     detector = OSPathDetector(list(StringIO(content, newline="")))
     detector.visit(tree)
     fixer = _PathFixer(content, tree)

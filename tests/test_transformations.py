@@ -82,6 +82,77 @@ def test_unsupported_or_known_inexact_forms_stay_unchanged(expression: str) -> N
 
 
 @pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import os\nfrom pathlib import Path\nfrom zipfile import *\n"
+            "result = os.path.basename('directory/file')\n",
+            "file",
+        ),
+        (
+            "import os\nflag = True\nfrom zipfile import *\n"
+            "result = os.path.basename('directory/file')\n",
+            "file",
+        ),
+        (
+            "import os\nfrom pathlib import Path\n"
+            "def check():\n    return os.path.basename('directory/file')\n"
+            "from zipfile import *\nresult = check()\n",
+            "file",
+        ),
+        (
+            "import os\nfrom pathlib import Path\n"
+            "checks = (os.path.basename('directory/file') for _ in [0])\n"
+            "from zipfile import *\nresult = next(checks)\n",
+            "file",
+        ),
+        (
+            "import os\nif True:\n    from zipfile import *\n"
+            "result = os.path.basename('directory/file')\n",
+            "file",
+        ),
+        (
+            "import os as operating_system\nPath = None\nfrom wildcard_exports import *\n"
+            "result = operating_system.path.basename('directory/file')\n",
+            "file",
+        ),
+        (
+            "import os\nfrom wildcard_exports import *\n"
+            "result = os.path.basename('directory/file')\n",
+            "custom",
+        ),
+        (
+            "from os.path import basename\nfrom zipfile import *\nresult = 'file'\n",
+            "file",
+        ),
+    ],
+)
+def test_wildcard_imports_leave_source_unchanged(
+    tmp_path: Path, source: str, expected: str
+) -> None:
+    (tmp_path / "wildcard_exports.py").write_text(
+        "from types import SimpleNamespace\n"
+        "PathlintPath = lambda value: None\n"
+        "os = SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))\n",
+        encoding="utf-8",
+    )
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    for content in (source, updated):
+        result = subprocess.run(
+            [sys.executable, "-c", content + "\nprint(result)\n"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected + "\n"
+        assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
     "expression",
     [
         "os.path.exists('')",
