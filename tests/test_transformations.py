@@ -330,9 +330,10 @@ def test_import_cleanup_preserves_public_exports(tmp_path: Path, declaration: st
                 sys.executable,
                 "-B",
                 "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
                 "from fixture import *; print(basename('directory/file'))",
+                str(tmp_path),
             ],
-            cwd=tmp_path,
             capture_output=True,
             text=True,
             check=False,
