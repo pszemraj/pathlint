@@ -1,6 +1,7 @@
 """Behavioral regressions for AST-backed, source-preserving transformations."""
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -139,10 +140,14 @@ def test_wildcard_imports_leave_source_unchanged(
     updated, count = fix_content(source)
     assert count == 0
     assert updated == source
+    environment = os.environ.copy()
+    if environment.get("COV_CORE_SOURCE"):
+        environment["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
     for content in (source, updated):
         result = subprocess.run(
             [sys.executable, "-c", content + "\nprint(result)\n"],
             cwd=tmp_path,
+            env=environment,
             capture_output=True,
             text=True,
             check=False,
