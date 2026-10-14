@@ -222,21 +222,6 @@ class _PathFixer(OSPathDetector):
         alternative = scope.copy()
         self.merge_bindings([body, alternative])
 
-    def merge_bindings(self, alternatives: list[dict[str, str | None]]) -> None:
-        """Retain an import origin only when every alternative agrees on it.
-
-        :param list[dict[str, str | None]] alternatives: Possible current-scope bindings.
-        """
-        scope = self.scopes[-1]
-        merged = {
-            name: alternatives[0].get(name)
-            if all(option.get(name) == alternatives[0].get(name) for option in alternatives)
-            else None
-            for name in set().union(*(option.keys() for option in alternatives))
-        }
-        scope.clear()
-        scope.update(merged)
-
     def visit_Try(self, node: ast.Try) -> None:
         """Merge successful and interrupted bindings before visiting the final suite.
 

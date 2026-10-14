@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import ast
 import sys
-from textwrap import dedent
+from pathlib import Path
+from textwrap import dedent, indent
 from types import ModuleType
 from typing import get_type_hints
 
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector
+from pathlint.linter import OSPathDetector, _lint_file
 
 
 def offenses(source: str) -> dict[int, set[str]]:
@@ -20,6 +21,74 @@ def offenses(source: str) -> dict[int, set[str]]:
     detector = OSPathDetector(source.splitlines())
     detector.visit(ast.parse(source))
     return dict(detector.offenses)
+
+
+@pytest.mark.parametrize("scope", ["module", "function", "class"])
+@pytest.mark.parametrize(
+    ("branches", "reported", "expected"),
+    [
+        ("if False:\n    os = custom\nresult = os.path.basename('a/b')", True, "b"),
+        ("if True:\n    os = custom\nresult = os.path.basename('a/b')", False, "custom"),
+        (
+            "if flag:\n    os = custom\nelse:\n    result = os.path.basename('a/b')",
+            True,
+            "b",
+        ),
+        (
+            "if flag:\n    os = custom\nelse:\n    import os\nresult = os.path.basename('a/b')",
+            False,
+            "b",
+        ),
+        (
+            "if flag:\n    import os\nelse:\n    import os\nresult = os.path.basename('a/b')",
+            True,
+            "b",
+        ),
+        (
+            "if flag:\n    import os\nelse:\n    os = custom\nresult = os.path.basename('a/b')",
+            False,
+            "custom",
+        ),
+        (
+            "if False:\n    os = custom\nelif True:\n    import os\nelse:\n    os = custom\n"
+            "result = os.path.basename('a/b')",
+            True,
+            "b",
+        ),
+        (
+            "if False:\n    os = custom\nelse:\n    result = os.path.basename('a/b')",
+            True,
+            "b",
+        ),
+    ],
+)
+def test_conditional_bindings_are_analyzed_independently(
+    scope: str, branches: str, reported: bool, expected: str, tmp_path: Path
+) -> None:
+    source = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))\n"
+        "flag = False\n"
+    )
+    body = "import os\n" + branches + "\n"
+    if scope == "function":
+        source += "def check():\n" + indent(body + "return result\n", "    ")
+        source += "observed = check()\n"
+    elif scope == "class":
+        source += "class Example:\n" + indent(body, "    ")
+        source += "observed = Example.result\n"
+    else:
+        source += body + "observed = result\n"
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<branches>", "exec", dont_inherit=True), namespace)
+    assert namespace["observed"] == expected
+    target = tmp_path / "branches.py"
+    target.write_text(source, encoding="utf-8")
+    findings = _lint_file(target)
+    expected_lines = {
+        index for index, line in enumerate(source.splitlines(), 1) if "result = os.path" in line
+    }
+    assert {line for line, _ in findings} == (expected_lines if reported else set())
 
 
 @pytest.mark.parametrize(
@@ -692,12 +761,13 @@ def test_deferred_method_mutations_are_collected() -> None:
     ],
 )
 @pytest.mark.parametrize("shadow", ["alias = object()", "import math as alias"])
+@pytest.mark.parametrize("condition", ["False", "flag"])
 def test_uncertain_alias_mutations_retain_possible_import_origin(
-    import_statement: str, attribute: str, shadow: str
+    import_statement: str, attribute: str, shadow: str, condition: str
 ) -> None:
     source = (
         f"{import_statement}\n"
-        "if False:\n"
+        f"if {condition}:\n"
         f"    {shadow}\n"
         f"{attribute} = custom\n"
         "import os.path as other\n"
@@ -707,8 +777,10 @@ def test_uncertain_alias_mutations_retain_possible_import_origin(
     assert detector.mutated_attributes == {"os.path.basename"}
     assert detector.resolve(ast.parse("other.basename", mode="eval").body) is None
     assert detector.resolve(ast.parse("other.dirname", mode="eval").body) == "os.path.dirname"
-    # Historical imports establish possible mutation targets, not readable bindings.
-    expected_binding = "math" if shadow.startswith("import") else None
+    # Unknown branches retain possible mutations without establishing read bindings.
+    expected_binding = None
+    if condition == "False":
+        expected_binding = "os" if import_statement == "import os as alias" else "os.path"
     assert detector.resolve(ast.parse("alias", mode="eval").body) == expected_binding
 
 

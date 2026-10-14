@@ -266,6 +266,43 @@ class OSPathDetector(ast.NodeVisitor):
         else:
             self.scopes[-1][node.id] = None
 
+    def visit_If(self, node: ast.If) -> None:
+        """Inspect branches independently and retain certain resulting bindings.
+
+        :param ast.If node: Conditional statement to inspect for bindings and usages.
+        """
+        self.visit(node.test)
+        scope = self.scopes[-1]
+        before = scope.copy()
+        for statement in node.body:
+            self.visit(statement)
+        body = scope.copy()
+        scope.clear()
+        scope.update(before)
+        for statement in node.orelse:
+            self.visit(statement)
+        alternative = scope.copy()
+        if isinstance(node.test, ast.Constant):
+            # Still inspect both suites, but literal conditions determine later bindings.
+            self.merge_bindings([body if node.test.value else alternative])
+        else:
+            self.merge_bindings([body, alternative])
+
+    def merge_bindings(self, alternatives: list[dict[str, str | None]]) -> None:
+        """Retain an import origin only when every alternative agrees on it.
+
+        :param list[dict[str, str | None]] alternatives: Possible current-scope bindings.
+        """
+        scope = self.scopes[-1]
+        merged = {
+            name: alternatives[0].get(name)
+            if all(option.get(name) == alternatives[0].get(name) for option in alternatives)
+            else None
+            for name in set().union(*(option.keys() for option in alternatives))
+        }
+        scope.clear()
+        scope.update(merged)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """Record loaded os.path attributes and invalidate assigned or deleted origins."""
         origin = self.resolve(node)
