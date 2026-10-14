@@ -471,6 +471,8 @@ def test_replacing_path_module_invalidates_descendants() -> None:
         ("del module.Path", "pathlib.Path"),
         ("constructor.exists = custom", "pathlib.Path.exists"),
         ("del constructor.exists", "pathlib.Path.exists"),
+        ("module.PurePath.name = custom", "pathlib.PurePath.name"),
+        ("module.PosixPath.exists = custom", "pathlib.PosixPath.exists"),
     ],
 )
 def test_pathlib_mutations_invalidate_constructor_origins(statement: str, expected: str) -> None:
@@ -478,7 +480,14 @@ def test_pathlib_mutations_invalidate_constructor_origins(statement: str, expect
     detector = OSPathDetector(source.splitlines())
     detector.visit(ast.parse(source))
     assert detector.mutated_attributes == {expected}
-    assert detector.resolve(ast.parse("constructor.exists", mode="eval").body) is None
+    assert (
+        detector.resolve(
+            ast.parse(statement.removeprefix("del ").split(" = ")[0], mode="eval").body
+        )
+        is None
+    )
+    if expected.startswith("pathlib.Path"):
+        assert detector.resolve(ast.parse("constructor.exists", mode="eval").body) is None
     if expected == "pathlib.Path":
         assert detector.resolve(ast.parse("module.Path", mode="eval").body) is None
 
