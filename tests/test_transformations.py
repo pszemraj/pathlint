@@ -337,6 +337,13 @@ def test_match_capture_is_not_mistaken_for_os() -> None:
         "os = custom\nfor item in []:\n    import os\n",
         "os = custom\nwhile False:\n    import os\n",
         "os = custom\ntry:\n    pass\nexcept Exception:\n    import os\nfinally:\n    result = os.path.exists('missing')\n",
+        "import os\n[(os := custom) for item in [0]]\n",
+        "import os\n{(os := custom).path.exists('missing') for item in [0]}\n",
+        "import os\n{item: (os := custom) for item in [0]}\n",
+        "import os\n[[(os := custom) for item in [0]] for outer in [0]]\n",
+        "import os\nsequence = ((os := custom) for item in [0])\nnext(sequence)\n",
+        "def check():\n    import os\n    [(os := custom) for item in [0]]\n    return os\nos = check()\n",
+        "import os\n[(os.path.exists('missing'), (os := custom)) for item in [0, 1]]\n",
     ],
 )
 def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:

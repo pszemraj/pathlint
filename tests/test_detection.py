@@ -180,6 +180,37 @@ def test_comprehension_target_does_not_become_function_local() -> None:
     assert set(offenses(source)) == {3, 5}
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[(alias := custom) for _ in [0]]",
+        "{(alias := custom) for _ in [0]}",
+        "{(alias := custom): 0 for _ in [0]}",
+        "{0: (alias := custom) for _ in [0]}",
+        "[0 for _ in [0] if (alias := custom)]",
+        "[[(alias := custom) for _ in [0]] for _ in [0]]",
+        "[(alias := custom) for _ in []]",
+        "((alias := custom) for _ in [0])",
+    ],
+)
+@pytest.mark.parametrize("in_function", [False, True])
+def test_comprehension_walrus_invalidates_containing_binding(
+    expression: str, in_function: bool
+) -> None:
+    body = f"import os as alias\nresult = {expression}\nalias.path.exists('file')"
+    if in_function:
+        body = "def f(custom):\n" + "\n".join("    " + line for line in body.splitlines())
+    assert offenses(body) == {}
+
+
+def test_comprehension_walrus_invalidates_calls_on_later_iterations() -> None:
+    source = """
+        import os as alias
+        result = [(alias.path.exists('file'), (alias := custom)) for _ in [0, 1]]
+    """
+    assert offenses(source) == {}
+
+
 def test_lambda_argument_does_not_become_enclosing_function_local() -> None:
     source = """
         import os

@@ -315,8 +315,17 @@ class OSPathDetector(ast.NodeVisitor):
     def visit_ListComp(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
     ) -> None:
-        """Visit a comprehension with generator bindings in a separate scope."""
+        """Visit comprehension targets locally and walrus bindings in their owner scope."""
         self.visit(node.generators[0].iter)
+        names = _ScopeNames()
+        names.visit(node)
+        owner = len(self.scopes) - 1
+        while self.scope_kinds[owner] == "comprehension":
+            owner -= 1
+        # Walrus targets escape comprehension scopes. Invalidate before inspecting
+        # repeated iterations; generator consumption and empty iterables are unknown.
+        for name in names.names:
+            self.scopes[owner][name] = None
         self.scopes.append({})
         self.scope_kinds.append("comprehension")
         for index, generator in enumerate(node.generators):
