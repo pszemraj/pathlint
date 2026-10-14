@@ -914,6 +914,12 @@ def test_deferred_method_mutations_are_collected() -> None:
         "alias = second = original\nalias = second",
         "alias = [original][0]",
         "aliases = [original]\nalias = aliases[0]",
+        "aliases = []\naliases += [original]\nalias = aliases[0]",
+        "aliases = {}\naliases |= {'path': original}\nalias = aliases['path']",
+        "alias = [original for _ in [0]][0]",
+        "alias = {'path': original for _ in [0]}['path']",
+        "alias = ([original] + [None])[0]",
+        "def identity(value):\n    return value\nalias = identity(original)",
         "alias = {'path': original}['path']",
         "alias, = (*[original],)",
         "*aliases, = (original,)\nalias = aliases[0]",
@@ -957,13 +963,40 @@ def test_copied_alias_mutations_do_not_establish_read_bindings(
     assert detector.resolve(ast.parse("osp.dirname", mode="eval").body) == "os.path.dirname"
 
 
-@pytest.mark.parametrize("target", ["box.module", "box['module']"])
-def test_namespace_copies_stored_in_objects_exclude_fixes(target: str) -> None:
-    source = f"import os.path as osp\n{target} = osp\nresult = osp.basename('a/b')\n"
+@pytest.mark.parametrize(
+    "copy",
+    [
+        "box.module = original",
+        "box['module'] = original",
+        "from contextlib import nullcontext\nwith nullcontext(original) as alias:\n    pass",
+        "def copied():\n    return original\nalias = copied()",
+        "factory = lambda: original\nalias = factory()",
+        "def copies():\n    yield original\nalias = next(copies())",
+        "class Box:\n    module = original",
+        pytest.param(
+            "match original:\n    case alias:\n        pass",
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 10), reason="match requires Python 3.10"
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("original", "escaped"),
+    [("osp", "os.path"), ("osp.basename", "os.path.basename"), ("paths.Path", "pathlib.Path")],
+)
+def test_escaped_namespace_copies_exclude_fixes_without_hiding_findings(
+    copy: str, original: str, escaped: str
+) -> None:
+    source = (
+        "import os.path as osp\nimport pathlib as paths\n"
+        + copy.replace("original", original)
+        + "\nresult = osp.basename('a/b')\n"
+    )
     detector = OSPathDetector(source.splitlines())
     detector.visit(ast.parse(source))
-    assert detector.escaped_origins == {"os.path"}
-    assert 3 in detector.offenses
+    assert escaped in detector.escaped_origins
+    assert len(source.splitlines()) in detector.offenses
     assert detector.resolve(ast.parse("osp.basename", mode="eval").body) == "os.path.basename"
     assert fix_content(source) == (source, 0)
 

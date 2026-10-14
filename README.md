@@ -232,12 +232,13 @@ Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes or callable internals are assigned or
 deleted are also left unchanged. Calls outside annotation expressions remain
 eligible for fixes.
-Mutation checks follow direct assignment copies of imported modules and callables,
-including chained, annotated, named-expression, and literal unpacked assignments,
-literal container selections, and possible copies in conditional or Boolean expressions.
-Loop targets and default parameters also retain possible mutation origins.
-Copies stored in object attributes or container entries conservatively prevent
-fixes for the copied module or callable.
+Mutation checks retain possible copies of imported modules and callables through
+assignments, loop targets, and default parameters. They inspect all expression
+children, conservatively including container selections and comprehensions. Calls
+retain possible origins from their arguments; return types are not inferred.
+Copies stored in object attributes, class fields, or container entries conservatively prevent
+fixes for the copied module or callable. The same applies when these objects are
+passed to calls, returned, yielded, or used by context managers or match patterns.
 These copies do not establish bindings for detection or migration of copied calls.
 Mutation origins are conservative across scopes and statement order; copies of
 callable internals can also exclude fixes for their exported parent.
@@ -248,7 +249,8 @@ builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
 `vars`, `__import__`, `getattr`, `setattr`, and `delattr`, exposed `builtins`,
 function/frame namespaces, and module registries (`sys.modules` or
 `importlib.import_module`); these capabilities can overwrite aliases or generated
-constructors. Bare `dir()` use retains imports while supported calls remain eligible.
+constructors. Exposed function defaults, keyword defaults, and annotation dictionaries
+also prevent fixes. Bare `dir()` use retains imports while supported calls remain eligible.
 Fixes also retain imports referenced by annotations or `__all__`, and avoid
 constructors affected by Pathlib mutations. Sources containing wildcard imports
 are left unchanged because

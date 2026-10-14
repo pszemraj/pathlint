@@ -645,7 +645,7 @@ def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
     }
     namespace_names = (
         builtins
-        | {"__builtins__"}
+        | {"__builtins__", "__annotations__"}
         | {
             alias.asname or alias.name
             for node in ast.walk(tree)
@@ -668,6 +668,9 @@ def _references_namespace(tree: ast.AST, *, include_dir: bool = False) -> bool:
         "__getattribute__",
         "__getattr__",
         "__closure__",
+        "__defaults__",
+        "__kwdefaults__",
+        "__annotations__",
         "cell_contents",
         "f_globals",
         "f_locals",

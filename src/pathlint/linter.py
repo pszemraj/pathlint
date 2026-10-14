@@ -18,6 +18,7 @@ class _ScopeNames(ast.NodeVisitor):
         self.names: set[str] = set()
         self.external: set[str] = set()
         self.globals: set[str] = set()
+        self.imports: set[str] = set()
 
     def visit_Name(self, node: ast.Name) -> None:
         """Collect names assigned or deleted in the current scope."""
@@ -30,11 +31,15 @@ class _ScopeNames(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         """Collect the names introduced by an import statement."""
-        self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        names = {alias.asname or alias.name.split(".")[0] for alias in node.names}
+        self.names.update(names)
+        self.imports.update(names)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Collect the aliases introduced by a from-import statement."""
-        self.names.update(alias.asname or alias.name for alias in node.names)
+        names = {alias.asname or alias.name for alias in node.names}
+        self.names.update(names)
+        self.imports.update(names)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Collect function bindings and enclosing expressions without entering its body.
@@ -233,37 +238,29 @@ class OSPathDetector(ast.NodeVisitor):
         :return set[str]: Previously imported spellings that the target may mutate.
         """
         if isinstance(node, ast.Name):
+            if not isinstance(node.ctx, ast.Load):
+                return set()
             return self.import_origins.get(node.id, set()) | self.mutation_aliases.get(
                 node.id, set()
             )
         if isinstance(node, ast.Attribute):
             return {f"{origin}.{node.attr}" for origin in self._mutation_origins(node.value)}
-        if isinstance(node, ast.NamedExpr):
-            return self._mutation_origins(node.value)
-        if isinstance(node, ast.IfExp):
-            return self._mutation_origins(node.body) | self._mutation_origins(node.orelse)
-        if isinstance(node, ast.BoolOp):
-            return set().union(*(self._mutation_origins(value) for value in node.values))
-        if isinstance(node, (ast.Subscript, ast.Starred)):
-            return self._mutation_origins(node.value)
-        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            return set().union(*(self._mutation_origins(value) for value in node.elts))
-        if isinstance(node, ast.Dict):
+        if isinstance(node, ast.Call):
+            # Calls may return their inputs; invoking an imported callable does
+            # not itself copy that callable. Return types are not inferred.
             return set().union(
-                *(
-                    self._mutation_origins(value)
-                    for value in [*node.keys, *node.values]
-                    if value is not None
-                )
+                *(self._mutation_origins(value) for value in [*node.args, *node.keywords])
             )
-        return set()
+        # Expressions can retain or return their referenced objects. Do not use
+        # their syntax to prove that an imported namespace cannot be copied.
+        return set().union(*(self._mutation_origins(child) for child in ast.iter_child_nodes(node)))
 
     def _collect_mutation_aliases(self, node: ast.Module) -> None:
         """Collect possible copies before visiting deferred writers, without binding reads.
 
         :param ast.Module node: Module containing imports and assignment copies.
         """
-        copies: list[tuple[ast.AST, ast.AST]] = []
+        copies: list[tuple[ast.AST | None, ast.AST]] = []
         for child in ast.walk(node):
             if isinstance(child, ast.Import):
                 for alias in child.names:
@@ -277,11 +274,16 @@ class OSPathDetector(ast.NodeVisitor):
                     )
             elif isinstance(child, ast.Assign):
                 copies.extend((target, child.value) for target in child.targets)
-            elif isinstance(child, (ast.AnnAssign, ast.NamedExpr)) and child.value is not None:
+            elif (
+                isinstance(child, (ast.AnnAssign, ast.NamedExpr, ast.AugAssign))
+                and child.value is not None
+            ):
                 copies.append((child.target, child.value))
             elif isinstance(child, (ast.For, ast.AsyncFor, ast.comprehension)):
                 copies.append((child.target, child.iter))
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                if isinstance(child, ast.Lambda):
+                    copies.append((None, child.body))
                 positional = [*child.args.posonlyargs, *child.args.args]
                 copies.extend(
                     zip(
@@ -294,6 +296,23 @@ class OSPathDetector(ast.NodeVisitor):
                     for argument, default in zip(child.args.kwonlyargs, child.args.kw_defaults)
                     if default is not None
                 )
+            elif isinstance(child, ast.Call):
+                copies.extend((None, value) for value in [*child.args, *child.keywords])
+            elif (
+                isinstance(child, (ast.Return, ast.Yield, ast.YieldFrom))
+                and child.value is not None
+            ):
+                copies.append((None, child.value))
+            elif isinstance(child, ast.withitem):
+                copies.append((None, child.context_expr))
+            elif isinstance(child, getattr(ast, "Match", ())):
+                copies.append((None, child.subject))
+            elif isinstance(child, ast.ClassDef):
+                names = _ScopeNames()
+                for statement in child.body:
+                    names.visit(statement)
+                copies.append((None, child))
+                copies.extend((None, ast.Name(id=name, ctx=ast.Load())) for name in names.imports)
         # Copies can cross deferred bodies in either declaration order. Retaining
         # every possible origin deliberately sacrifices scope/order precision.
         changed = True
@@ -302,16 +321,16 @@ class OSPathDetector(ast.NodeVisitor):
             for target, value in copies:
                 changed |= self._retain_mutation_alias(target, value)
 
-    def _retain_mutation_alias(self, target: ast.AST, value: ast.AST) -> bool:
+    def _retain_mutation_alias(self, target: ast.AST | None, value: ast.AST) -> bool:
         """Retain bounded import origins for a direct or unpacked assignment copy.
 
-        :param ast.AST target: Assignment target, parameter, or unpacking pattern.
+        :param ast.AST | None target: Assignment target or None when the copied value escapes.
         :param ast.AST value: Expression copied into the target.
         :return bool: Whether any possible mutation origin was added.
         """
         if isinstance(target, ast.Starred):
             return self._retain_mutation_alias(target.value, value)
-        if isinstance(target, (ast.Name, ast.arg, ast.Attribute, ast.Subscript)):
+        if target is None or isinstance(target, (ast.Name, ast.arg, ast.Attribute, ast.Subscript)):
             origins = set()
             for origin in self._mutation_origins(value):
                 if origin == "os":
@@ -322,9 +341,9 @@ class OSPathDetector(ast.NodeVisitor):
                     origins.add(".".join(origin.split(".")[:2]))
             # Collapse copied callable internals to their exported parent. This
             # overapproximates mutations and prevents cyclic copies growing paths.
-            if isinstance(target, (ast.Attribute, ast.Subscript)):
-                # Object/container stores expose the copied object to writes that
-                # this name-based collector cannot resolve. Exclude it conservatively.
+            if target is None or isinstance(target, (ast.Attribute, ast.Subscript)):
+                # Escaping objects can be written through unmodeled aliases.
+                # Exclude fixes without changing the detector's read bindings.
                 before = len(self.escaped_origins)
                 self.escaped_origins.update(
                     "os.path" if origin == "os" else origin for origin in origins

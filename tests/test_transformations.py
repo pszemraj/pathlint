@@ -2353,6 +2353,23 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
                 "alias = second = osp\nalias = second",
                 "alias = [osp][0]",
                 "aliases = [osp]\nalias = aliases[0]",
+                "aliases = []\naliases += [osp]\nalias = aliases[0]",
+                "aliases = {}\naliases |= {'path': osp}\nalias = aliases['path']",
+                "alias = [osp for _ in [0]][0]",
+                "alias = {'path': osp for _ in [0]}['path']",
+                "alias = ([osp] + [None])[0]",
+                "def identity(value):\n    return value\nalias = identity(osp)",
+                "from contextlib import nullcontext\nwith nullcontext(osp) as alias:\n    pass",
+                "def copied():\n    return osp\nalias = copied()",
+                "factory = lambda: osp\nalias = factory()",
+                "def copies():\n    yield osp\nalias = next(copies())",
+                "class Box:\n    module = osp\nalias = Box.module",
+                "class Box:\n    import os.path as module\nalias = Box.module",
+                *(
+                    ["match osp:\n    case alias:\n        pass"]
+                    if sys.version_info >= (3, 10)
+                    else []
+                ),
                 "alias = {'path': osp}['path']",
                 "alias, = (*[osp],)",
                 "*aliases, = (osp,)\nalias = aliases[0]",
@@ -2386,6 +2403,29 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
             "custom",
             False,
         ),
+        (
+            "factory = lambda: osp.basename\nalias = factory()\n"
+            "def custom(value):\n    return 'custom'\n"
+            "alias.__code__ = custom.__code__\nresult = osp.basename('directory/file')\n",
+            "custom",
+            False,
+        ),
+        *[
+            (
+                definition + f"\n{access}.basename = lambda value: 'custom'\n"
+                "result = osp.basename('directory/file')\n",
+                "custom",
+                False,
+            )
+            for definition, access in (
+                ("def holder(alias=osp):\n    pass", "holder.__defaults__[0]"),
+                ("def holder(*, alias=osp):\n    pass", "holder.__kwdefaults__['alias']"),
+                ("holder = lambda alias=osp: None", "holder.__defaults__[0]"),
+                ("def holder(alias: osp):\n    pass", "holder.__annotations__['alias']"),
+                ("def holder() -> osp:\n    pass", "holder.__annotations__['return']"),
+                ("value: osp", "__annotations__['value']"),
+            )
+        ],
         (
             "def writer():\n    alias.basename = lambda value: 'custom'\n"
             "def maker():\n    global alias\n    alias = osp\n"
