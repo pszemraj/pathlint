@@ -178,7 +178,8 @@ callback = os.path.join
 
 Pathlint resolves imported names in function, class, and comprehension scopes
 so ordinary local shadowing is not mistaken for `os.path`. Private aliases in class
-scopes are left unresolved because Python mangles their names. Function bodies
+scopes are left unresolved because Python mangles their names. Deleted class
+locals and cleared exception aliases fall back to module globals. Function bodies
 use the enclosing scope's final bindings for detection; dynamic rebinding can
 prevent resolution. Detection inspects `if` branches independently and uses literal
 conditions when merging bindings in the current scope. Fixes in deferred bodies
@@ -220,19 +221,25 @@ Keyword arguments, starred arguments, call targets containing comments, literal
 file descriptors, byte paths, and known inexact literal forms are left unchanged.
 These include empty paths, trailing separators, named-user expansion, and rooted
 literals passed to `isabs` whose interpretation can differ under Windows path rules.
+On Windows, string-returning fixes also skip literals whose separators or dot
+components Pathlib would normalize.
 Calls with uncertain branch, exception, context manager, match, or loop bindings
 and methods whose `os.path` attributes are assigned or deleted are also left
 unchanged. Calls outside annotation expressions remain eligible for fixes.
 Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
-Fixes retain imports when annotations, `__all__`, namespace inspection, or dynamic
-code (`dir`, `eval`, `exec`) may reference them, and avoid constructors affected by
-Pathlib mutations. Sources containing wildcard imports are left unchanged because
+Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
+builtins are left unchanged. This includes `exec`, `eval`, `globals`, `locals`,
+`vars`, `__import__`, `getattr`, `setattr`, and `delattr`, exposed `builtins`, and
+function/frame namespaces; these capabilities can overwrite aliases or generated
+constructors. Bare `dir()` use retains imports while supported calls remain eligible.
+Fixes also retain imports referenced by annotations or `__all__`, and avoid
+constructors affected by Pathlib mutations. Sources containing wildcard imports
+are left unchanged because
 their exports can overwrite names used by a fix. Sources using type parameters
 or type aliases are also left unchanged because their annotation scopes and lazy
-values are not analyzed by the
-fixer. `abspath`, `splitext`, `sep`, and
-`pathsep` are not rewritten because their former replacements changed behavior
+values are not analyzed by the fixer. `abspath`, `splitext`, `sep`, and `pathsep`
+are not rewritten because their former replacements changed behavior
 or returned incorrect values. `exists`, `isfile`, and `isdir` are also left
 unchanged: on supported Python versions, their Pathlib replacements can raise
 filesystem errors where `os.path` returns `False`.
