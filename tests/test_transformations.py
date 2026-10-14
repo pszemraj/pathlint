@@ -103,6 +103,9 @@ def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
         ("join", ("C:.", "b")),
         ("join", ("C:a", "C:")),
         ("join", (r"C:\a", "C:")),
+        ("basename", ("C:.",)),
+        ("basename", ("c:.",)),
+        ("basename", ("Z:.",)),
         ("dirname", ("a/b/c",)),
         ("dirname", ("/file",)),
         ("dirname", ("C:/file",)),
@@ -129,7 +132,9 @@ def test_windows_separator_spellings_stay_unchanged(
 
     original_result = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
-    replacement_result = str(path.parent if method == "dirname" else path)
+    replacement_result = (
+        path.name if method == "basename" else str(path.parent if method == "dirname" else path)
+    )
     assert original_result != replacement_result
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
@@ -146,6 +151,14 @@ def test_windows_separator_spellings_stay_unchanged(
         ("join", ("C:", "b")),
         ("join", ("C:a", "D:")),
         ("join", ("C:a", "C:b")),
+        ("basename", ("C:",)),
+        ("basename", ("C:file",)),
+        ("basename", ("C:..",)),
+        ("basename", ("C:/file",)),
+        ("basename", (r"C:\file",)),
+        ("basename", (r"a\\b",)),
+        ("basename", (r"a\.\b",)),
+        ("basename", ("a/b",)),
         ("dirname", ("a/b",)),
         ("dirname", ("a\\b/c",)),
         ("expanduser", ("a",)),
@@ -163,7 +176,10 @@ def test_windows_exact_separator_spellings_remain_supported(
 
     expected = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
-    assert expected == str(path.parent if method == "dirname" else path)
+    replacement_result = (
+        path.name if method == "basename" else str(path.parent if method == "dirname" else path)
+    )
+    assert expected == replacement_result
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )

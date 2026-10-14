@@ -424,14 +424,16 @@ class _PathFixer(OSPathDetector):
             for arg in node.args
         ):
             return
-        if sys.platform == "win32" and function in {"join", "dirname", "expanduser"}:
+        if sys.platform == "win32" and function in {"join", "basename", "dirname", "expanduser"}:
             literal_args = [
                 arg.value
                 for arg in node.args
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
             ]
             if any(
-                ntpath.dirname(value) != str(PureWindowsPath(value).parent)
+                ntpath.basename(value) != PureWindowsPath(value).name
+                if function == "basename"
+                else ntpath.dirname(value) != str(PureWindowsPath(value).parent)
                 if function == "dirname"
                 else value != str(PureWindowsPath(value))
                 for value in literal_args
