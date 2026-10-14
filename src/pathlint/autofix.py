@@ -304,11 +304,8 @@ class _PathFixer(OSPathDetector):
         self.generic_visit(node)
         if not origin or not origin.startswith("os.path."):
             return
-        if any(
-            changed == "pathlib.Path" or changed.startswith("pathlib.Path.")
-            for changed in self.mutated_attributes
-        ):
-            # Neither an existing alias nor a new import restores a mutated Path.
+        if any(changed.startswith("pathlib.") for changed in self.mutated_attributes):
+            # Path also depends on inherited and platform-specific pathlib classes.
             return
         function = origin.removeprefix("os.path.")
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):

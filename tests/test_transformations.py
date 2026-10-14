@@ -889,6 +889,9 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
         "paths.Path = lambda value: None\nfrom pathlib import Path",
         "from pathlib import Path as constructor\nconstructor.exists = lambda self: True",
         "def writer():\n    paths.Path = lambda value: None\nwriter()",
+        "paths.PurePath.name = property(lambda self: 'custom')",
+        "from pathlib import PurePath as constructor\nconstructor.name = property(lambda self: 'custom')",
+        "paths.PosixPath.name = property(lambda self: 'custom')",
     ],
 )
 def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
@@ -902,10 +905,16 @@ def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
     program = (
         "import pathlib, sys\n"
         "original_path = pathlib.Path\noriginal_exists = original_path.exists\n"
+        "original_name = pathlib.PurePath.name\n"
+        "original_posix_name = pathlib.PosixPath.__dict__.get('name')\n"
         "namespace = {}\ntry:\n"
         "    exec(compile(sys.argv[1], '<fixture>', 'exec'), namespace)\n"
         "    print(namespace['result'])\nfinally:\n"
         "    pathlib.Path = original_path\n    original_path.exists = original_exists\n"
+        "    pathlib.PurePath.name = original_name\n"
+        "    if original_posix_name is None:\n"
+        "        if 'name' in pathlib.PosixPath.__dict__:\n            del pathlib.PosixPath.name\n"
+        "    else:\n        pathlib.PosixPath.name = original_posix_name\n"
     )
     for content in (source, updated):
         result = subprocess.run(
