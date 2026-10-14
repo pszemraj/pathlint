@@ -264,6 +264,19 @@ class _PathFixer(OSPathDetector):
 
     visit_TryStar = visit_Try
 
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        """Visit reachable calls without assuming every context binding completes.
+
+        :param ast.With | ast.AsyncWith node: Context statement that may suppress exceptions.
+        """
+        self.generic_visit(node)
+        names = _ScopeNames()
+        names.visit(node)
+        # An earlier context can suppress failures in later entries or body statements.
+        self.scopes[-1].update(dict.fromkeys(names.names))
+
+    visit_AsyncWith = visit_With
+
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
         """Visit for suites without assuming bindings stay unchanged across iterations.
 

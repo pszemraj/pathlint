@@ -216,9 +216,9 @@ Keyword arguments, starred arguments, call targets containing comments, literal
 file descriptors, byte paths, and known inexact literal forms are left unchanged.
 These include empty paths, trailing separators, named-user expansion, and rooted
 literals passed to `isabs` whose interpretation can differ under Windows path rules.
-Calls with uncertain branch,
-exception, match, or loop bindings and methods whose `os.path` attributes are
-assigned or deleted are also left unchanged. Fixes retain imports when
+Calls with uncertain branch, exception, context manager, match, or loop bindings
+and methods whose `os.path` attributes are assigned or deleted are also left
+unchanged. Fixes retain imports when
 annotations or `__all__` may reference them, and avoid constructors affected by
 Pathlib mutations. Sources containing wildcard imports are left unchanged because
 their exports can overwrite names used by a fix. Sources using type parameters or

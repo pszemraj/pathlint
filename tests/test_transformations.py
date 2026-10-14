@@ -1117,6 +1117,12 @@ def test_failed_match_guards_retain_bindings(match: str, expected: object, chang
         "    else:\n        os = custom\n        raise TypeError()\n        import os\n"
         "    finally:\n        result = os.path.isabs('missing')\n"
         "except TypeError:\n    pass\n",
+        "from contextlib import suppress\nos = custom\nwith suppress(ValueError):\n"
+        "    int('bad')\n    import os\n",
+        "from contextlib import suppress\nimport os\nwith suppress(ValueError):\n"
+        "    os = custom\n    int('bad')\n    import os\n",
+        "from contextlib import suppress\nos = custom\n"
+        "with suppress(ValueError), int('bad') as os:\n    import os\n",
         "import os\n[(os := custom) for item in [0]]\n",
         "import os\n{(os := custom).path.isabs('missing') for item in [0]}\n",
         "import os\n{item: (os := custom) for item in [0]}\n",
@@ -1137,6 +1143,26 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
     assert count == 0
     assert updated == source
     assert run(updated) == run(source) == "custom"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_suppressed_context_import_preserves_argument_binding(asynchronous: bool) -> None:
+    keyword = "async " if asynchronous else ""
+    decorator = "asynccontextmanager" if asynchronous else "contextmanager"
+    source = (
+        f"from contextlib import {decorator}\n"
+        "from types import SimpleNamespace\nimport asyncio\n"
+        f"@{decorator}\n{keyword}def suppressor():\n"
+        "    try:\n        yield\n    except ValueError:\n        pass\n"
+        f"{keyword}def check(p):\n"
+        f"    {keyword}with suppressor():\n"
+        "        int('bad')\n        import os.path as p\n"
+        "    return p.basename('a/b')\n"
+        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+        + ("result = asyncio.run(check(custom))\n" if asynchronous else "result = check(custom)\n")
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == "custom"
 
 
 @pytest.mark.parametrize(
