@@ -621,8 +621,11 @@ def fix_content(content: str) -> tuple[str, int]:
     detector.visit(tree)
     fixer = _PathFixer(content, tree)
     fixer.mutated_attributes.update(detector.mutated_attributes)
+    # Late str imports can shadow conversions inserted into deferred bodies.
     fixer.deferred_rebindings.update(
-        name for name, origins in detector.import_origins.items() if len(origins) > 1
+        name
+        for name, origins in detector.import_origins.items()
+        if len(origins) > 1 or name == "str"
     )
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))

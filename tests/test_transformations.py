@@ -325,11 +325,20 @@ def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
     assert run(source) == "custom"
 
 
-def test_deferred_string_conversion_respects_later_builtin_shadowing() -> None:
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "str = lambda value: 'custom'",
+        "from builtins import repr as str",
+        "import builtins as str",
+        "def writer():\n    global str\n    from builtins import repr as str\nwriter()",
+    ],
+)
+def test_deferred_string_conversion_respects_later_builtin_shadowing(binding: str) -> None:
     source = (
         "import os.path as osp\n"
         "def check():\n    return osp.join('directory', 'file')\n"
-        "str = lambda value: 'custom'\n"
+        f"{binding}\n"
         "result = check()\n"
     )
     assert fix_content(source) == (source, 0)
