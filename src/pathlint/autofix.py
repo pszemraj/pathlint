@@ -447,6 +447,12 @@ def _clean_imports(content: str) -> tuple[str, int]:
     """
     tree = ast.parse(content)
     source = _Source(content)
+    if any(
+        isinstance(node, ast.Name) and node.id == "__all__" and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(tree)
+    ):
+        # Explicit exports can refer to imports by string, including computed lists.
+        return content, 0
     # A later del still needs its imported binding after calls are rewritten.
     referenced = {
         node.id

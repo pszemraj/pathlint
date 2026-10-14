@@ -300,6 +300,33 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
     assert run(updated) == run(source)
 
 
+@pytest.mark.parametrize("exports", ['["basename"]', 'list(("basename",))'])
+def test_import_cleanup_preserves_public_exports(tmp_path: Path, exports: str) -> None:
+    source = (
+        f"from os.path import basename\n__all__ = {exports}\nresult = basename('directory/file')\n"
+    )
+    updated, count = fix_content(source)
+    assert count > 0
+    assert "from os.path import basename" in updated
+    for content in (source, updated):
+        (tmp_path / "fixture.py").write_text(content, encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "from fixture import *; print(basename('directory/file'))",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "file\n"
+        assert result.stderr == ""
+
+
 def test_crlf_and_final_newline_are_preserved() -> None:
     original = "import os.path\r\nresult = os.path.exists('missing')\r\n"
     updated, count = fix_content(original)
