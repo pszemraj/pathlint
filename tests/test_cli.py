@@ -128,6 +128,7 @@ def test_files_lists_only_deduplicated_selection(
         (["files", "one.py", "--exclude", "vendor", "two.py"], 0),
         (["one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
         (["one.py", "--dry-run", "two.py", "--quiet"], 1),
+        (["--stats", "one.py", "--dry-run", "two.py", "--aggressive"], 1),
     ],
 )
 def test_paths_can_follow_interspersed_options(
@@ -237,13 +238,19 @@ def test_statistics_are_sorted_capped_and_use_single_read(
     assert len(set(reads)) == 7
 
 
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "legacy_flags", [None, [], ["--stats"], ["--aggressive"], ["--stats", "--aggressive"]]
+)
 def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
-    workspace: Path, capsys: pytest.CaptureFixture[str], legacy: bool
+    workspace: Path, capsys: pytest.CaptureFixture[str], legacy_flags: list[str] | None
 ) -> None:
     path = write_file(workspace, "sample.py")
     original = path.read_bytes()
-    args = ["--dry-run", "sample.py"] if legacy else ["fix", "sample.py", "--dry-run"]
+    args = (
+        [*legacy_flags, "--dry-run", "sample.py"]
+        if legacy_flags is not None
+        else ["fix", "sample.py", "--dry-run"]
+    )
     assert cli.main([*args, "--quiet"]) == 1
     output = capsys.readouterr()
     assert output.out == (
@@ -260,7 +267,9 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
     assert f"{chr(27)}[" not in output.out
     assert output.err == ""
     assert path.read_bytes() == original
-    args = ["--fix", "sample.py"] if legacy else ["fix", "sample.py"]
+    args = (
+        ["--fix", "sample.py", *legacy_flags] if legacy_flags is not None else ["fix", "sample.py"]
+    )
     assert cli.main([*args, "--quiet"]) == 0
     assert "Path('example').exists()" in path.read_text(encoding="utf-8")
     assert capsys.readouterr() == ("", "")
@@ -359,10 +368,11 @@ def test_exclude_option_value_does_not_activate_legacy_fix(workspace: Path) -> N
     assert args.exclude == ["--fix"]
 
 
-def test_legacy_fix_flag_is_not_removed_from_option_value() -> None:
-    args = cli.parse_args(["--fix", "--exclude=--fix", "."])
+@pytest.mark.parametrize("pattern", ["--fix", "--stats", "--aggressive"])
+def test_legacy_flags_are_not_removed_from_option_value(pattern: str) -> None:
+    args = cli.parse_args(["--fix", f"--exclude={pattern}", "."])
     assert args.command == "fix"
-    assert args.exclude == ["--fix"]
+    assert args.exclude == [pattern]
 
 
 @pytest.mark.parametrize("command", [None, "check", "fix", "files"])

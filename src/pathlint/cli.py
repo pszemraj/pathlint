@@ -25,6 +25,7 @@ def _legacy_args(argv: list[str]) -> list[str]:
     if argv and argv[0] in {"check", "fix", "files", "-h", "--help", "--version"}:
         return argv
     normalized = []
+    check_options: set[int] = set()
     fix = False
     value_pending = False
     for index, arg in enumerate(argv):
@@ -37,10 +38,15 @@ def _legacy_args(argv: list[str]) -> list[str]:
         elif arg == "--fix":
             fix = True
         else:
+            if arg in {"--stats", "--aggressive"}:
+                check_options.add(len(normalized))
             normalized.append(arg)
             if arg == "--dry-run":
                 fix = True
             value_pending = arg in {"-e", "--exclude", "--output-format"}
+    if fix:
+        # The legacy parser accepted these flags and ignored them during fixes.
+        normalized = [arg for index, arg in enumerate(normalized) if index not in check_options]
     return ["fix" if fix else "check", *normalized]
 
 
