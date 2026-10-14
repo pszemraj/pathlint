@@ -182,7 +182,8 @@ scopes are left unresolved because Python mangles their names. Deleted class
 locals and cleared exception aliases fall back to module globals. Function bodies
 use the enclosing scope's final bindings for detection; dynamic rebinding can
 prevent resolution. Detection inspects `if` branches independently and uses literal
-conditions when merging bindings in the current scope. Fixes in deferred bodies
+conditions when merging bindings in the current scope. Loop bindings are merged
+conservatively across iterations and `else` suites. Fixes in deferred bodies
 require enclosing imports to exist when the function, lambda, or generator is
 created, and conservatively skip aliases rebound anywhere in the file, including
 imports with conflicting origins. Stable imports inside the body can still be

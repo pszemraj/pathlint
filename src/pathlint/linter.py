@@ -574,13 +574,47 @@ class OSPathDetector(ast.NodeVisitor):
             self.visit(value)
 
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
-        """Visit the iterable, bind loop targets, and traverse both loop suites."""
+        """Visit for suites without assuming bindings stay unchanged across iterations.
+
+        :param ast.For | ast.AsyncFor node: Synchronous or asynchronous for statement.
+        """
         self.visit(node.iter)
+        before = self.scopes[-1].copy()
+        names = _ScopeNames()
+        for statement in [node.target, *node.body]:
+            names.visit(statement)
+        self.scopes[-1].update(dict.fromkeys(names.names))
+        entry = self.scopes[-1].copy()
         self.visit(node.target)
-        for statement in (*node.body, *node.orelse):
+        for statement in node.body:
             self.visit(statement)
+        body = self.scopes[-1].copy()
+        self.merge_bindings([before, entry, body])
+        for statement in node.orelse:
+            self.visit(statement)
+        self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        """Visit while suites without assuming bindings stay unchanged across iterations.
+
+        :param ast.While node: While statement whose body may never execute.
+        """
+        before = self.scopes[-1].copy()
+        names = _ScopeNames()
+        for statement in [node.test, *node.body]:
+            names.visit(statement)
+        self.scopes[-1].update(dict.fromkeys(names.names))
+        self.visit(node.test)
+        entry = self.scopes[-1].copy()
+        for statement in node.body:
+            self.visit(statement)
+        body = self.scopes[-1].copy()
+        self.merge_bindings([before, entry, body])
+        for statement in node.orelse:
+            self.visit(statement)
+        self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         """Visit an augmented target's expressions before its value and name binding."""

@@ -775,6 +775,94 @@ def test_for_iterable_is_resolved_before_binding_target() -> None:
     assert set(offenses(source)) == {2}
 
 
+@pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
+@pytest.mark.parametrize(
+    ("before", "body", "alternative"),
+    [
+        ("import os", "os = custom", "pass"),
+        ("os = custom", "import os", "pass"),
+        ("os = custom", "break", "import os"),
+        ("import os", "os = custom", "import os"),
+    ],
+)
+def test_loop_exits_retain_only_certain_bindings(
+    loop: str, before: str, body: str, alternative: str
+) -> None:
+    source = (
+        f"{before}\n{loop}:\n    {body}\nelse:\n    {alternative}\nresult = os.path.basename('a/b')"
+    )
+    if loop.startswith("async"):
+        source = "async def f(custom, values):\n" + indent(source, "    ")
+    assert offenses(source) == {}
+
+
+@pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
+def test_repeated_loop_bindings_do_not_resolve_earlier_calls(loop: str) -> None:
+    source = (
+        f"import os\n{loop}:\n"
+        "    os.path.basename('a/b')\n    os = custom\n"
+        "else:\n    os.path.basename('a/b')"
+    )
+    if loop.startswith("async"):
+        source = "async def f(custom, values):\n" + indent(source, "    ")
+    assert offenses(source) == {}
+
+
+def test_while_test_respects_bindings_from_later_iterations() -> None:
+    source = "import os\nwhile os.path.basename('a/b'):\n    os = custom"
+    assert offenses(source) == {}
+
+
+@pytest.mark.parametrize("initial", ["import os", "os = custom"])
+def test_literal_false_loop_does_not_establish_body_bindings(initial: str) -> None:
+    source = (
+        f"{initial}\nwhile False:\n    import os\n"
+        "else:\n    os = custom\nresult = os.path.basename('a/b')"
+    )
+    assert offenses(source) == {}
+
+
+@pytest.mark.parametrize("loop", ["for _ in values", "async for _ in values", "while flag"])
+def test_stable_loop_imports_remain_detectable_in_each_suite(loop: str) -> None:
+    source = (
+        f"import os\n{loop}:\n    os.path.basename('a/b')\n"
+        "else:\n    os.path.basename('a/b')\nos.path.basename('a/b')"
+    )
+    expected = {3, 5, 6}
+    if loop.startswith("async"):
+        source = "async def f(values):\n" + indent(source, "    ")
+        expected = {line + 1 for line in expected}
+    assert set(offenses(source)) == expected
+
+
+@pytest.mark.parametrize(
+    "loop",
+    [
+        "for _ in [1]:\n    break\nelse:\n    import os",
+        "while True:\n    break\nelse:\n    import os",
+        "for _ in []:\n    import os",
+        "while False:\n    import os",
+        "async for _ in values():\n    break\nelse:\n    import os",
+    ],
+)
+def test_loop_false_positive_reproducer_executes_custom_binding(loop: str) -> None:
+    header = (
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))\n"
+    )
+    body = f"os = custom\n{loop}\nresult = os.path.basename('a/b')"
+    if loop.startswith("async"):
+        source = header + "import asyncio\nasync def values():\n    yield 1\nasync def run():\n"
+        source += indent(body + "\nreturn result", "    ")
+        source += "\nresult = asyncio.run(run())"
+    else:
+        source = header + body
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+    assert namespace["result"] == "custom"
+    assert offenses(source) == {}
+
+
 def test_multiple_usages_on_one_line_keep_exact_source_once() -> None:
     source = """
         from os.path import exists as present, join
