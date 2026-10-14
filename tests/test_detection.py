@@ -158,10 +158,30 @@ def test_only_actual_os_path_imports_are_resolved(source: str) -> None:
         "import os\ndef f():\n    try:\n        pass\n    except Exception as os:\n        os.path.exists('file')",
         "import os\ntry:\n    raise ValueError()\nexcept ValueError as os:\n    import os\n"
         "os.path.exists('file')",
+        "import os as __os\nclass Example:\n    result = __os.path.basename('a/b')",
     ],
 )
 def test_shadowed_os_names_are_not_resolved(source: str) -> None:
     assert offenses(source) == {}
+
+
+@pytest.mark.parametrize("method", [False, True])
+def test_private_alias_respects_class_name_mangling(method: bool) -> None:
+    body = "result = __os.path.basename('a/b')\n"
+    if method:
+        body = "def check(self):\n    return __os.path.basename('a/b')\n"
+    source = (
+        "import os as __os\nfrom types import SimpleNamespace\n"
+        "_Example__os = SimpleNamespace(path=SimpleNamespace(basename=lambda value: 'custom'))\n"
+        "class Example:\n"
+        + "\n".join("    " + line for line in body.splitlines())
+        + ("\nresult = Example().check()\n" if method else "\nresult = Example.result\n")
+    )
+    assert offenses(source) == {}
+    assert fix_content(source) == (source, 0)
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<private-alias>", "exec", dont_inherit=True), namespace)
+    assert namespace["result"] == "custom"
 
 
 def test_shadowed_function_alias_keeps_import_diagnostic_only() -> None:

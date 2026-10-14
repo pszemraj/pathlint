@@ -185,6 +185,9 @@ class OSPathDetector(ast.NodeVisitor):
 
         :return str | None: Import spelling, or None for an unbound or shadowed name.
         """
+        if name.startswith("__") and not name.endswith("__") and "class" in self.scope_kinds:
+            # Private identifiers use a mangled spelling throughout class scopes.
+            return None
         for index in range(len(self.scopes) - 1, -1, -1):
             if self.scope_kinds[index] == "class" and index != len(self.scopes) - 1:
                 continue

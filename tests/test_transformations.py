@@ -1001,6 +1001,15 @@ def test_result_for_missing_path_is_false() -> None:
         "import pathlib\nimport os\ntry:\n    raise ValueError()\n"
         "except ValueError as pathlib:\n    import pathlib\n"
         "result = os.path.basename('a/b')\n",
+        "from pathlib import Path as __P\nimport os\n"
+        "class Example:\n    result = os.path.basename('a/b')\n"
+        "result = Example.result\n",
+        "import pathlib as __paths\nimport os\n"
+        "class Example:\n    result = os.path.basename('a/b')\n"
+        "result = Example.result\n",
+        "from pathlib import Path as __P\nimport os\n"
+        "class Example:\n    def check(self):\n        return os.path.basename('a/b')\n"
+        "result = Example().check()\n",
         pytest.param(
             "from pathlib import Path\nimport os\ntry:\n"
             "    raise ExceptionGroup('failure', [ValueError()])\n"
