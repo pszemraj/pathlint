@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 [project.scripts]
-pathlint = "pathlint.linter:main"
+pathlint = "pathlint.cli:main"
 
 [project.urls]
 Repository = "https://github.com/pszemraj/pathlint"

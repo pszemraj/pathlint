@@ -134,8 +134,8 @@ print(p.exists())"""
 class TestLintFile:
     """Test the enhanced lint_file function."""
 
-    def test_early_termination_no_os_or_path(self, tmp_path: Path) -> None:
-        """Test that files without 'os' or 'path' skip AST parsing."""
+    def test_no_os_or_path(self, tmp_path: Path) -> None:
+        """Test files without os/path imports or references."""
         test_file = tmp_path / "test.py"
         test_file.write_text("""import sys
 print('Hello World')
@@ -144,7 +144,7 @@ def main():
 
         offenses = lint_file(test_file)
         assert len(offenses) == 0
-        # File should be skipped early without AST parsing
+        # Clean source has no offenses.
 
     def test_lint_file_with_offenses(self, tmp_path: Path) -> None:
         """Test linting a file with os.path usage."""
@@ -292,10 +292,9 @@ x = os.path.exists('test')""")
 
         monkeypatch.setattr(sys, "argv", ["pathlint", str(tmp_path), "--stats"])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 1
+        assert status == 1
         captured = capsys.readouterr()
         assert "Worst offenders:" in captured.out
         assert "worst.py" in captured.out
@@ -315,10 +314,9 @@ x = os.path.exists('test')""")
 
         monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file), "--aggressive"])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 1
+        assert status == 1
         captured = capsys.readouterr()
         assert "⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️" in captured.out
 
@@ -340,19 +338,14 @@ def f(p: os.path.PathLike):
 
         monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file)])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 1
+        assert status == 1
         captured = capsys.readouterr()
 
-        # Check professional format
-        assert "L   1:" in captured.out or "L1:" in captured.out
-        assert "────────────" in captured.out
-        assert "Files checked:" in captured.out
-        assert "Files with issues:" in captured.out
-        assert "Total violations:" in captured.out
-        assert "✗ Found os.path usage. Migrate to pathlib." in captured.out
+        assert ":1: PL001 os.path usage: import os.path" in captured.out
+        assert "Found 3 violations in 1 of 1 files checked." in captured.out
+        assert "────────" not in captured.out
 
     def test_main_clean_files(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -369,12 +362,10 @@ def f(p: os.path.PathLike):
 
         monkeypatch.setattr(sys, "argv", ["pathlint", str(test_file)])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 0
+        assert status == 0
         captured = capsys.readouterr()
-        assert "✓" in captured.out
         assert "no os.path usage found" in captured.out
 
     def test_main_no_files_found(
@@ -393,12 +384,11 @@ def f(p: os.path.PathLike):
 
         monkeypatch.setattr(sys, "argv", ["pathlint", str(empty_dir)])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 2
+        assert status == 0
         captured = capsys.readouterr()
-        assert "No Python files found" in captured.out
+        assert "No Python files selected" in captured.out
 
     def test_main_nonexistent_path_error(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -411,9 +401,8 @@ def f(p: os.path.PathLike):
         """
         monkeypatch.setattr(sys, "argv", ["pathlint", "/nonexistent/path"])
 
-        with pytest.raises(SystemExit) as exc_info:
-            main()
+        status = main()
 
-        assert exc_info.value.code == 2
+        assert status == 2
         captured = capsys.readouterr()
-        assert "✗ Path does not exist" in captured.err
+        assert "Path does not exist" in captured.err

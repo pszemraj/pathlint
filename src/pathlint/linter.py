@@ -1,309 +1,318 @@
 #!/usr/bin/env python3
-"""Fast os.path detector with type annotation support."""
+"""Detect os.path imports, aliases, calls, and annotations."""
 
-import argparse
+from __future__ import annotations
+
 import ast
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+
+
+class _ScopeNames(ast.NodeVisitor):
+    """Collect local bindings without descending into nested scopes."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.external: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names.add(node.id)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        self.names.add(node.arg)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(alias.asname or alias.name for alias in node.names)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_ClassDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default:
+                self.visit(default)
+
+    def visit_ListComp(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    ) -> None:
+        for generator in node.generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+
+    visit_SetComp = visit_ListComp
+    visit_DictComp = visit_ListComp
+    visit_GeneratorExp = visit_ListComp
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.external.update(node.names)
+
+    visit_Nonlocal = visit_Global
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.AST) -> None:
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    visit_MatchStar = visit_MatchAs
+
+    def visit_MatchMapping(self, node: ast.AST) -> None:
+        if node.rest:
+            self.names.add(node.rest)
+        self.generic_visit(node)
 
 
 class OSPathDetector(ast.NodeVisitor):
-    """Single-pass AST visitor that catches ALL os.path usage patterns."""
+    """Find os.path usage while respecting import aliases and local shadowing."""
 
     def __init__(self, lines: list[str]) -> None:
-        """Initialize AST visitor.
-
-        Args:
-            lines: Source code lines for context extraction.
-        """
-        self.offenses: dict[int, set[str]] = defaultdict(set)  # Dedupes automatically
+        self.offenses: dict[int, set[str]] = defaultdict(set)
         self.lines = lines
+        self.scopes: list[dict[str, str | None]] = [{}]
+        self.scope_kinds = ["module"]
         self.os_imported = False
-        self.path_aliases: set[str] = set()  # Track 'path', 'ospath', etc.
+        self.path_aliases: set[str] = set()
+        self.deferred: list[
+            tuple[
+                ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+                list[dict[str, str | None]],
+                list[str],
+            ]
+        ] = []
 
-    def _record(self, node: ast.AST, context: str = "") -> None:
-        """Record unique offense by line number.
+    def visit_Module(self, node: ast.Module) -> None:
+        for statement in node.body:
+            self.visit(statement)
+        # Function bodies use enclosing bindings after those scopes finish defining names.
+        # This also avoids rewriting aliases that the enclosing scope reassigns later.
+        for function, scopes, kinds in self.deferred:
+            self.scopes, self.scope_kinds = scopes.copy(), kinds.copy()
+            names = _ScopeNames()
+            names.visit(function.args)
+            body = [function.body] if isinstance(function, ast.Lambda) else function.body
+            for statement in body:
+                names.visit(statement)
+            self.scopes.append(dict.fromkeys(names.names - names.external))
+            self.scope_kinds.append("function")
+            for statement in body:
+                self.visit(statement)
+        self.scopes, self.scope_kinds = [self.scopes[0]], ["module"]
 
-        Args:
-            node: AST node where offense was detected.
-            context: Optional context string (unused, for future extension).
-        """
-        if hasattr(node, "lineno"):
-            line_idx = node.lineno - 1
-            if 0 <= line_idx < len(self.lines):
-                line = self.lines[line_idx].strip()
-                self.offenses[node.lineno].add(line)
+    def resolve_name(self, name: str) -> str | None:
+        """Resolve an imported name in the current lexical scope."""
+        for index in range(len(self.scopes) - 1, -1, -1):
+            if self.scope_kinds[index] == "class" and index != len(self.scopes) - 1:
+                continue
+            if name in self.scopes[index]:
+                return self.scopes[index][name]
+        return None
+
+    def resolve(self, node: ast.AST) -> str | None:
+        """Resolve an imported name or attribute to its original spelling."""
+        if isinstance(node, ast.Name):
+            return self.resolve_name(node.id)
+        if isinstance(node, ast.Attribute):
+            parent = self.resolve(node.value)
+            return f"{parent}.{node.attr}" if parent else None
+        return None
+
+    def _record(self, node: ast.AST) -> None:
+        if hasattr(node, "lineno") and 0 < node.lineno <= len(self.lines):
+            self.offenses[node.lineno].add(self.lines[node.lineno - 1].strip())
 
     def visit_Import(self, node: ast.Import) -> None:
-        """Detect: import os, import os.path, import os.path as X"""
         for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            self.scopes[-1][name] = alias.name if alias.asname else alias.name.split(".")[0]
             if alias.name == "os":
-                self.os_imported = True  # NOW we can detect os.path.X
-            elif alias.name == "os.path":
+                self.os_imported = True
+            elif alias.name == "os.path" or alias.name.startswith("os.path."):
                 self._record(node)
                 self.path_aliases.add(alias.asname or "os.path")
-        self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Detect: from os import path [as X], from os.path import ..."""
-        if node.module == "os":
-            for alias in node.names:
-                if alias.name == "path":
-                    self._record(node)
-                    self.path_aliases.add(alias.asname or "path")
-        elif node.module and "os.path" in node.module:
-            self._record(node)
-        self.generic_visit(node)
+        for alias in node.names:
+            name = alias.asname or alias.name
+            origin = f"{node.module}.{alias.name}" if node.module and not node.level else None
+            self.scopes[-1][name] = origin
+            if origin and (origin == "os.path" or origin.startswith("os.path.")):
+                self._record(node)
+                self.path_aliases.add(name)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            origin = self.resolve(node)
+            if origin and (origin == "os.path" or origin.startswith("os.path.")):
+                self._record(node)
+        else:
+            self.scopes[-1][node.id] = None
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        """Detect: os.path.X, aliased_path.X"""
-        # Direct os.path usage
-        if isinstance(node.value, ast.Attribute):
-            if (
-                isinstance(node.value.value, ast.Name)
-                and node.value.value.id == "os"
-                and node.value.attr == "path"
-            ):
-                self._record(node)
-        # Aliased path usage
-        elif isinstance(node.value, ast.Name) and node.value.id in self.path_aliases:
+        origin = self.resolve(node)
+        if (
+            isinstance(node.ctx, ast.Load)
+            and origin
+            and (origin == "os.path" or origin.startswith("os.path."))
+        ):
             self._record(node)
         self.generic_visit(node)
 
-    # TYPE ANNOTATION SUPPORT (Original doesn't have this!)
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self.visit(node.args)
+        if node.returns:
+            self.visit(node.returns)
+        self.scopes[-1][node.name] = None
+        self.deferred.append((node, self.scopes.copy(), self.scope_kinds.copy()))
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)
+        self.deferred.append((node, self.scopes.copy(), self.scope_kinds.copy()))
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(expression)
+        self.scopes[-1][node.name] = None
+        self.scopes.append({})
+        self.scope_kinds.append("class")
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+        self.scope_kinds.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
+
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        """Detect os.path in type annotations: x: os.path.PathLike"""
-        self._check_annotation(node.annotation, node)
+        self.visit(node.annotation)
+        if node.value:
+            self.visit(node.value)
+        self.visit(node.target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.visit(node.target)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self.visit(node.target)
+        for statement in (*node.body, *node.orelse):
+            self.visit(statement)
+
+    visit_AsyncFor = visit_For
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.value)
+        self.visit(node.target)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type:
+            self.visit(node.type)
+        if node.name:
+            self.scopes[-1][node.name] = None
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_MatchAs(self, node: ast.AST) -> None:
+        if node.name:
+            self.scopes[-1][node.name] = None
         self.generic_visit(node)
 
-    def visit_arg(self, node: ast.arg) -> None:
-        """Detect os.path in function argument annotations."""
-        if node.annotation:
-            self._check_annotation(node.annotation, node)
+    visit_MatchStar = visit_MatchAs
+
+    def visit_MatchMapping(self, node: ast.AST) -> None:
+        if node.rest:
+            self.scopes[-1][node.rest] = None
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Detect os.path in return type annotations."""
-        if node.returns:
-            self._check_annotation(node.returns, node)
-        self.generic_visit(node)
+    def visit_ListComp(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    ) -> None:
+        self.visit(node.generators[0].iter)
+        self.scopes.append({})
+        self.scope_kinds.append("comprehension")
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            self.visit(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self.scopes.pop()
+        self.scope_kinds.pop()
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Detect os.path in async function return type annotations."""
-        if node.returns:
-            self._check_annotation(node.returns, node)
-        self.generic_visit(node)
+    visit_SetComp = visit_ListComp
+    visit_DictComp = visit_ListComp
+    visit_GeneratorExp = visit_ListComp
 
-    def _check_annotation(self, annotation: ast.AST, source_node: ast.AST) -> None:
-        """Recursively check annotations for os.path.
 
-        Args:
-            annotation: AST node representing the type annotation.
-            source_node: Source AST node for context (unused).
-        """
-        for child in ast.walk(annotation):
-            if isinstance(child, ast.Attribute):
-                self.visit_Attribute(child)
+def _lint_file(filepath: Path) -> list[tuple[int, str]]:
+    content = filepath.read_text(encoding="utf-8")
+    tree = ast.parse(content, filename=str(filepath))
+    if "os" not in content and "path" not in content:
+        return []
+    detector = OSPathDetector(content.splitlines())
+    detector.visit(tree)
+    return [(line, next(iter(sources))) for line, sources in sorted(detector.offenses.items())]
 
 
 def lint_file(filepath: Path) -> list[tuple[int, str]]:
-    """Fast single-pass lint with early termination.
-
-    Args:
-        filepath: Path to Python file to lint.
-
-    Returns:
-        List of (line_number, line_content) tuples for violations found.
-    """
+    """Lint a file, preserving the original list-returning helper interface."""
     try:
-        content = filepath.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        print(f"✗ Cannot read {filepath}: {e.__class__.__name__}", file=sys.stderr)
-        return []
-
-    lines = content.splitlines()
-
-    # PERFORMANCE: Skip files without 'os' or 'path' strings
-    if "os" not in content and "path" not in content:
-        return []
-
-    try:
-        tree = ast.parse(content, filename=str(filepath))
-    except SyntaxError as e:
-        print(f"✗ Syntax error in {filepath}:{e.lineno}:{e.offset}", file=sys.stderr)
-        return []
-
-    detector = OSPathDetector(lines)
-    detector.visit(tree)
-
-    # Convert to sorted list (no duplicates thanks to Set)
-    result = []
-    for lineno in sorted(detector.offenses.keys()):
-        line_content = next(iter(detector.offenses[lineno]))
-        result.append((lineno, line_content))
-
-    return result
+        return _lint_file(filepath)
+    except SyntaxError as error:
+        print(f"✗ Syntax error in {filepath}:{error.lineno}:{error.offset}", file=sys.stderr)
+    except (OSError, UnicodeError) as error:
+        print(f"✗ Cannot read {filepath}: {error.__class__.__name__}", file=sys.stderr)
+    return []
 
 
-def find_python_files(paths: list[str], exclude_patterns: Optional[set[str]] = None) -> set[Path]:
-    """Efficiently collect Python files with smart exclusions.
+def find_python_files(paths: list[str], exclude_patterns: set[str] | None = None) -> set[Path]:
+    """Collect Python files, retaining the legacy custom directory exclusions."""
+    from pathlint.discovery import DEFAULT_EXCLUDES, discover_files
 
-    Args:
-        paths: List of file or directory paths to search.
-        exclude_patterns: Directory names to exclude (defaults to common patterns).
-
-    Returns:
-        Set of Python file paths found.
-    """
-    if exclude_patterns is None:
-        exclude_patterns = {
-            "__pycache__",
-            ".venv",
-            "venv",
-            ".git",
-            "node_modules",
-            ".tox",
-            "build",
-            "dist",
-        }
-
-    files = set()
-    for path_str in paths:
-        path = Path(path_str).resolve()
-        if not path.exists():
-            print(f"✗ Path does not exist: {path_str}", file=sys.stderr)
-            continue
-        if path.is_file():
-            if path.suffix == ".py":
-                files.add(path)
-        else:
-            # Smart exclusion during traversal
-            for py_file in path.rglob("*.py"):
-                if not any(part in exclude_patterns for part in py_file.parts):
-                    files.add(py_file)
-    return files
-
-
-def main_autofix(args: argparse.Namespace) -> int:
-    """Handle autofix mode separately.
-
-    Args:
-        args: Parsed command-line arguments.
-
-    Returns:
-        Exit code (0 for success, 2 for no files found).
-    """
-    from pathlint.autofix import fix_file
-
-    files = find_python_files(args.paths)
-    if not files:
-        print("No Python files found to fix")
-        return 2
-
-    total_files_fixed = 0
-    total_replacements = 0
-
-    for filepath in sorted(files):
-        replacements = fix_file(filepath, args.dry_run)
-        if replacements > 0:
-            total_files_fixed += 1
-            total_replacements += replacements
-
-    print(f"\n{'─' * 40}")
-
-    if args.dry_run:
-        print("Dry run complete:")
-        print(f"  Would fix {total_files_fixed} file(s)")
-        print(f"  Would make {total_replacements} replacement(s)")
-        print("\nRun with --fix to apply changes")
-    else:
-        if total_replacements > 0:
-            print(f"✓ Fixed {total_files_fixed} file(s)")
-            print(f"✓ Made {total_replacements} replacement(s)")
-            print("\n⚠️  Please review changes and test your code!")
-        else:
-            print("✓ No os.path usage found to fix")
-
-    # Return 0 if fixes were successfully applied (or no fixes needed)
-    return 0
-
-
-def main() -> None:
-    """CLI with professional output and useful features."""
-    parser = argparse.ArgumentParser(
-        description="Detect os.path usage in Python files",
-        epilog="Exit codes: 0 = clean, 1 = os.path found, 2 = errors",
+    files, errors = discover_files(
+        [Path(path) for path in paths],
+        default_excludes=DEFAULT_EXCLUDES if exclude_patterns is None else exclude_patterns,
     )
-    parser.add_argument("paths", nargs="+", help="Files or directories to check")
-    parser.add_argument(
-        "--aggressive",
-        action="store_true",
-        help="Show aggressive message when os.path is found",
-    )
-    parser.add_argument("--stats", action="store_true", help="Show detailed statistics")
-    parser.add_argument(
-        "--fix",
-        action="store_true",
-        help="Automatically fix os.path usage (modifies files!)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what --fix would change without modifying files",
-    )
+    for path, message in errors:
+        print(f"{path}: error: {message}", file=sys.stderr)
+    return set(files)
 
-    args = parser.parse_args()
 
-    # Handle --fix mode separately
-    if args.fix or args.dry_run:
-        sys.exit(main_autofix(args))
+def main(argv: list[str] | None = None) -> int:
+    """Forward the original entry point to the shared CLI."""
+    from pathlint.cli import main as cli_main
 
-    # Normal linting mode
-    files = find_python_files(args.paths)
-    if not files:
-        print("No Python files found to check")
-        sys.exit(2)
-
-    total_offenses = 0
-    files_with_offenses = []
-
-    for filepath in sorted(files):
-        offenses = lint_file(filepath)
-        if offenses:
-            files_with_offenses.append(filepath)
-            total_offenses += len(offenses)
-            print(f"\n{filepath}")
-            for lineno, line in offenses:
-                print(f"  L{lineno:4d}: {line}")
-
-    print(f"\n{'─' * 40}")
-
-    if total_offenses > 0:
-        if args.aggressive:
-            print("\n⚠️  ARE YOU KIDDING ME? USE PATHLIB! ⚠️\n")
-
-        print(f"Files checked:     {len(files)}")
-        print(f"Files with issues: {len(files_with_offenses)}")
-        print(f"Total violations:  {total_offenses}")
-
-        if args.stats and files_with_offenses:
-            print("\nWorst offenders:")
-            file_counts = {}
-            for f in files_with_offenses:
-                count = len(lint_file(f))
-                if count > 0:
-                    file_counts[f] = count
-            for f, count in sorted(file_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
-                print(f"  {count:3d} - {f.name}")
-
-        print("\n✗ Found os.path usage. Migrate to pathlib.")
-        sys.exit(1)
-    else:
-        print(f"✓ {len(files)} files checked - no os.path usage found!")
-        sys.exit(0)
+    return cli_main(argv)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

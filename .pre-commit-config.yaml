@@ -19,7 +19,7 @@ repos:
   hooks:
   - id: pathlint
     name: pathlint - Detect os.path usage
-    entry: pathlint
+    entry: pathlint check
     language: system
     types: [ python ]
     pass_filenames: true
