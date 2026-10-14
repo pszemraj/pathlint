@@ -219,13 +219,19 @@ Supported calls include `isabs`, `join`, `basename`, `dirname`, and `expanduser`
 Unsupported references retain their imports.
 Keyword arguments, starred arguments, call targets containing comments, literal
 file descriptors, byte paths, and known inexact literal forms are left unchanged.
-These include empty paths, trailing separators, named-user expansion, and rooted
-literals passed to `isabs` whose interpretation can differ under Windows path rules.
+Known inexact forms include empty paths, trailing separators, named-user
+expansion, and rooted literals passed to `isabs` whose interpretation can differ
+under Windows path rules.
 On Windows, string-returning fixes also skip literals whose separators or dot
 components Pathlib would normalize.
+Recognized byte-producing expressions such as concatenation, encoding, and nested
+`os.path` calls also remain unchanged. Expressions containing bytes or opaque
+nested calls are skipped conservatively, including explicit text conversions.
+Variable types are not inferred.
 Calls with uncertain branch, exception, context manager, match, or loop bindings
-and methods whose `os.path` attributes are assigned or deleted are also left
-unchanged. Calls outside annotation expressions remain eligible for fixes.
+and methods whose `os.path` attributes or callable internals are assigned or
+deleted are also left unchanged. Calls outside annotation expressions remain
+eligible for fixes.
 Explicit `global` writes prevent affected aliases, constructors, and `str`
 conversions from being used by fixes, including in module-level code.
 Sources using dynamic code, namespace dictionaries, or dynamic import/attribute
