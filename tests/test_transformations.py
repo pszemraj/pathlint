@@ -428,6 +428,12 @@ def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> No
         "from os.path import exists as present\nresult = present('missing')\ndel present\n",
         "from os import path as paths\nresult = paths.exists('missing')\ndel paths\n",
         "import os.path\nresult = os.path.exists('missing')\ndel os\n",
+        "import os\ndef outer():\n    from os.path import exists\n"
+        "    def inner():\n        nonlocal exists\n        exists = None\n"
+        "    return inner\nouter()()\nresult = os.path.basename('a/b')\n",
+        "import os\ndef outer():\n    import os.path as osp\n"
+        "    def inner():\n        nonlocal osp\n        osp = None\n"
+        "    return inner\nouter()()\nresult = os.path.basename('a/b')\n",
     ],
 )
 def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:

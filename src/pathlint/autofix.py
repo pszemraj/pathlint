@@ -525,6 +525,10 @@ def _clean_imports(content: str) -> tuple[str, int]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del))
     }
+    # Removing an enclosing import can make nonlocal declarations uncompilable.
+    referenced.update(
+        name for node in ast.walk(tree) if isinstance(node, ast.Nonlocal) for name in node.names
+    )
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             # Class imports expose attributes even without a bare-name use.
