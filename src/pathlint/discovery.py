@@ -109,9 +109,11 @@ def discover_files(
         :param Path candidate: File path found by Git or a filesystem walk.
         :param Path alias: File spelling under the original input directory.
         """
-        if not candidate.is_file() or excluded(candidate, alias):
+        if excluded(candidate, alias):
             return
         try:
+            if not candidate.is_file():
+                return
             resolved = candidate.resolve()
         except (OSError, RuntimeError) as error:
             errors.append((candidate, str(error)))
@@ -191,10 +193,9 @@ def discover_files(
                             continue
                         candidate = root / os.fsdecode(item)
                         candidate_alias = alias / os.fsdecode(item)
-                        if candidate.is_dir() and not candidate.is_symlink():
-                            if not excluded(candidate, candidate_alias, directory=True):
-                                scan(candidate, candidate_alias)
-                        else:
+                        if excluded(candidate.parent, candidate_alias.parent, directory=True):
+                            continue
+                        try:
                             # Outer indexes can contain individual files beneath an
                             # embedded repository instead of a single gitlink entry.
                             nested = root
@@ -204,7 +205,16 @@ def discover_files(
                                     scan(nested, alias / nested.relative_to(root))
                                     break
                             else:
-                                add_file(candidate, candidate_alias)
+                                if excluded(candidate, candidate_alias):
+                                    continue
+                                if candidate.is_dir() and not candidate.is_symlink():
+                                    if not excluded(candidate, candidate_alias, directory=True):
+                                        scan(candidate, candidate_alias)
+                                else:
+                                    add_file(candidate, candidate_alias)
+                        except OSError as error:
+                            if not excluded(candidate, candidate_alias):
+                                errors.append((candidate, str(error)))
                     return
                 if any(
                     (parent / ".git").is_file()
@@ -220,6 +230,7 @@ def discover_files(
         walk(root, alias)
 
     for path in paths:
+        alias = path
         try:
             alias = path.absolute()
             try:
@@ -240,5 +251,6 @@ def discover_files(
             else:
                 scan(path, alias)
         except OSError as error:
-            errors.append((path, str(error)))
+            if not is_excluded(alias, exclude_patterns):
+                errors.append((path, str(error)))
     return sorted(files), errors

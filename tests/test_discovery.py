@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -256,6 +258,10 @@ def test_outer_tracked_files_use_nested_repository_ignores(repo: Path, git_file:
     expected = sorted([wanted, tracked])
     assert discover_files([repo, nested, wanted]) == (expected, [])
     assert discover_files([nested]) == (expected, [])
+    assert discover_files([repo], exclude_patterns=("nested/ignored.py", "nested/tracked.py")) == (
+        [wanted],
+        [],
+    )
     assert discover_files([repo], exclude_patterns=("nested/",)) == ([], [])
     assert discover_files([repo], respect_gitignore=False) == (
         sorted([wanted, ignored, tracked]),
@@ -330,6 +336,94 @@ def test_git_listing_errors_are_reported(repo: Path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("pathlint.discovery.subprocess.run", fail_listing)
     assert discover_files([repo]) == ([], [(repo, "fatal: cannot read index")])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
+@pytest.mark.parametrize(
+    "patterns", [(), ("blocked",), ("blocked/",), ("./blocked",), ("blocked/a.py",)]
+)
+@pytest.mark.parametrize("named", [False, True])
+def test_git_unreadable_candidates_honor_exclusions_and_continue(
+    repo: Path, patterns: tuple[str, ...], named: bool
+) -> None:
+    blocked_file = write(repo, "blocked/a.py")
+    wanted = write(repo, "z.py")
+    source = "import os\nos.path.exists('example')\n"
+    wanted.write_text(source, encoding="utf-8")
+    git(repo, "add", "blocked/a.py", "z.py")
+    blocked = blocked_file.parent
+    original_mode = blocked.stat().st_mode
+    blocked.chmod(0)
+    try:
+        if os.access(blocked, os.X_OK):
+            pytest.skip("Current user bypasses directory permissions")
+        paths = [blocked_file, wanted] if named else [repo]
+        files, errors = discover_files(paths, exclude_patterns=patterns)
+        assert files == [wanted]
+        assert len(errors) == (0 if patterns else 1)
+        if errors:
+            assert errors[0][0] == blocked_file
+            assert "Permission denied" in errors[0][1]
+
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+        if "COV_CORE_SOURCE" in env:
+            env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
+        exclusions = [argument for pattern in patterns for argument in ("--exclude", pattern)]
+        for command in (
+            ["files"],
+            ["check", "--output-format", "json"],
+            ["fix", "--dry-run"],
+        ):
+            result = subprocess.run(
+                [sys.executable, "-m", "pathlint", *command, *map(str, paths), *exclusions],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == (int(command[0] != "files") if patterns else 2)
+            if command[0] == "check":
+                report = json.loads(result.stdout)
+                assert report["summary"]["files_checked"] == 1
+                assert [entry["path"] for entry in report["diagnostics"]] == ["z.py"]
+                assert len(report["errors"]) == (0 if patterns else 1)
+                assert result.stderr == ""
+            else:
+                assert "z.py" in result.stdout
+                assert ("Permission denied" in result.stderr) is (not patterns)
+        assert wanted.read_text(encoding="utf-8") == source
+    finally:
+        blocked.chmod(original_mode)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
+@pytest.mark.parametrize("respect_gitignore", [False, True])
+def test_unreadable_symlink_candidates_honor_exclusions_and_continue(
+    repo: Path, respect_gitignore: bool
+) -> None:
+    target = write(repo, "blocked/x.py")
+    link = repo / "a_link.py"
+    link.symlink_to(target)
+    wanted = write(repo, "z.py")
+    git(repo, "add", "blocked/x.py", "a_link.py", "z.py")
+    blocked = target.parent
+    original_mode = blocked.stat().st_mode
+    blocked.chmod(0)
+    try:
+        if os.access(blocked, os.X_OK):
+            pytest.skip("Current user bypasses directory permissions")
+        files, errors = discover_files([repo], respect_gitignore=respect_gitignore)
+        assert files == [wanted]
+        assert len(errors) == 2
+        assert any(path == link for path, _ in errors)
+        assert discover_files(
+            [repo],
+            exclude_patterns=("a_link.py", "blocked"),
+            respect_gitignore=respect_gitignore,
+        ) == ([wanted], [])
+    finally:
+        blocked.chmod(original_mode)
 
 
 @pytest.mark.parametrize("git_file", [False, True])
