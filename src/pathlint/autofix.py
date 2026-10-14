@@ -126,6 +126,15 @@ class _PathFixer(OSPathDetector):
             if isinstance(node, ast.ImportFrom) and node.level
             for alias in node.names
         )
+        # Explicit global writes can affect immediate calls after a deferred body
+        # runs, including through nested functions or class suites.
+        self.global_rebindings: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                scope_names = _ScopeNames()
+                for statement in node.body:
+                    scope_names.visit(statement)
+                self.global_rebindings.update(scope_names.names & scope_names.globals)
         names = (
             {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
             | {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
@@ -174,10 +183,12 @@ class _PathFixer(OSPathDetector):
         self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
 
     def resolve_name(self, name: str) -> str | None:
-        """Exclude rebound aliases from deferred function and generator bodies.
+        """Exclude explicit global writes and aliases rebound around deferred bodies.
 
         :return str | None: Import spelling, or None for a rebound or unresolved name.
         """
+        if name in self.global_rebindings:
+            return None
         if name in self.deferred_rebindings and any(
             kind in {"function", "generator"} for kind in self.scope_kinds
         ):
@@ -401,6 +412,7 @@ class _PathFixer(OSPathDetector):
             return
         if function in {"join", "dirname", "expanduser"} and (
             any("str" in scope for scope in self.scopes)
+            or "str" in self.global_rebindings
             or ("generator" in self.scope_kinds and "str" in self.deferred_rebindings)
         ):
             return

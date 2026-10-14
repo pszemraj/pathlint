@@ -678,6 +678,78 @@ def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "writer",
+    [
+        "def configure():\n    global osp\n    osp = ntpath\nconfigure()",
+        "def configure():\n    global osp\n    import ntpath as osp\nconfigure()",
+        "def configure():\n    global osp\n    from ntpath import basename as osp\nconfigure()",
+        "def outer():\n"
+        "    def configure():\n        global osp\n        osp = ntpath\n"
+        "    configure()\nouter()",
+        "def outer():\n    class Configure:\n        global osp\n        osp = ntpath\nouter()",
+    ],
+)
+def test_explicit_global_writes_prevent_immediate_alias_fixes(writer: str) -> None:
+    if "basename as osp" in writer:
+        imported = "from os.path import basename as osp"
+        expression = "osp('a\\\\b')"
+    else:
+        imported = "import os.path as osp"
+        expression = "osp.basename('a\\\\b')"
+    source = f"{imported}\nimport ntpath\n{writer}\nresult = {expression}\n"
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == "b"
+
+
+def test_explicit_global_deletion_preserves_immediate_name_error() -> None:
+    source = (
+        "import os.path as osp\n"
+        "def configure():\n    global osp\n    del osp\nconfigure()\n"
+        "try:\n    result = osp.basename('a/b')\n"
+        "except NameError:\n    result = 'missing'\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == "missing"
+
+
+def test_explicit_global_write_prevents_immediate_string_conversion() -> None:
+    source = (
+        "import os.path as osp\n"
+        "def configure():\n    global str\n    from builtins import repr as str\n"
+        "configure()\nresult = osp.join('a', 'b')\n"
+    )
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == str(Path("a") / "b")
+
+
+@pytest.mark.parametrize("binding", ["P = ntpath", "import ntpath as P", "del P"])
+def test_explicit_global_write_prevents_constructor_reuse(binding: str) -> None:
+    source = (
+        "from pathlib import Path as P\nimport os.path as osp\nimport ntpath\n"
+        f"def configure():\n    global P\n    {binding}\n"
+        "configure()\nresult = osp.basename('a/b')\n"
+    )
+    updated, count = fix_content(source)
+    assert count > 0
+    assert "result = P(" not in updated
+    assert run(updated) == run(source) == "b"
+
+
+def test_read_only_global_declarations_remain_rewritable() -> None:
+    source = (
+        "import os.path as osp\n"
+        "def check():\n    global osp\n    return osp.basename('a/b')\n"
+        "result = check()\n"
+    )
+    updated, count = fix_content(source)
+    assert count > 0
+    assert run(updated) == run(source) == "b"
+
+
+@pytest.mark.parametrize(
     ("definition", "invocation"),
     [
         ("def check():\n    return osp.join('directory', 'file')\n", "check()"),
