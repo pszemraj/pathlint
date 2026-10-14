@@ -10,15 +10,16 @@ from io import StringIO
 from pathlib import PureWindowsPath
 
 from pathlint._source import physical_lines
-from pathlint.bindings import _ScopeNames
+from pathlint.bindings import _ScopeNames, declaration_name
 from pathlint.linter import OSPathDetector
 from pathlint.mutations import MutationCollector
 
-METHODS = {
-    "isabs": "is_absolute()",
-    "basename": "name",
-    "dirname": "parent",
-    "expanduser": "expanduser()",
+REPLACEMENTS = {
+    "join": ("", True),
+    "isabs": (".is_absolute()", False),
+    "basename": (".name", False),
+    "dirname": (".parent", True),
+    "expanduser": (".expanduser()", True),
 }
 
 
@@ -66,11 +67,14 @@ class _Source:
         :param int end: Exclusive character offset in the original source.
         :return str: Source interval with its contained replacements applied.
         """
-        text = self.content[start:end]
-        for left, right, replacement in sorted(self.edits, reverse=True):
+        chunks: list[str] = []
+        cursor = start
+        for left, right, replacement in sorted(self.edits):
             if start <= left and right <= end:
-                text = text[: left - start] + replacement + text[right - start :]
-        return text
+                chunks.extend((self.content[cursor:left], replacement))
+                cursor = right
+        chunks.append(self.content[cursor:end])
+        return "".join(chunks)
 
     def replace(self, start: int, end: int, replacement: str) -> None:
         """Record a replacement, superseding edits contained within its interval.
@@ -88,50 +92,30 @@ class _PathFixer(OSPathDetector):
 
     _use_literal_conditions = False
 
-    def __init__(self, content: str, tree: ast.Module, mutations: MutationCollector) -> None:
+    def __init__(
+        self, content: str, tree: ast.Module, mutations: MutationCollector, platform: str
+    ) -> None:
         """Initialize source edits and choose an unused pathlib constructor alias.
 
         :param str content: Original Python source to edit.
         :param ast.Module tree: Parsed module used to identify names and leading imports.
         :param MutationCollector mutations: Collected import origins, escapes, and writes.
+        :param str platform: Target platform used to check path spelling equivalence.
         """
         super().__init__(mutations)
         self.mutated_attributes.update(self.escaped_origins)
         self.source = _Source(content)
+        self.platform = platform
         self.count = 0
         self.needs_import = False
         self.debug_calls: set[ast.Call] = set()
         # Annotation evaluation can be postponed, including by default on Python 3.14.
         # Keep expressions intact without imposing definition-time bindings on them.
-        self.annotation_calls = {
-            call
-            for node in ast.walk(tree)
-            for annotation in (getattr(node, "annotation", None), getattr(node, "returns", None))
-            if annotation is not None
-            for call in ast.walk(annotation)
-            if isinstance(call, ast.Call)
-        }
+        self.annotation_calls: set[ast.Call] = set()
         # Deferred bodies may run before later imports, or between rebindings.
         # Same-spelling writes in unrelated scopes also exclude an alias: avoiding
         # uncertain migrations needs no execution-order or call-graph analysis.
-        self.deferred_rebindings = {
-            node.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
-        }
-        self.deferred_rebindings.update(
-            name
-            for node in ast.walk(tree)
-            if not isinstance(node, ast.alias)
-            for name in (getattr(node, "name", None), getattr(node, "rest", None))
-            if isinstance(name, str)
-        )
-        self.deferred_rebindings.update(
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.level
-            for alias in node.names
-        )
+        self.deferred_rebindings: set[str] = set()
         # Late str imports and conflicting import origins invalidate deferred calls.
         self.deferred_rebindings.update(
             name
@@ -141,33 +125,34 @@ class _PathFixer(OSPathDetector):
         # Explicit global writes can affect immediate calls after a deferred body
         # runs, including through nested functions or class suites.
         self.global_rebindings: set[str] = set()
+        names: set[str] = set()
         for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    self.deferred_rebindings.add(node.id)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+                if isinstance(node, ast.ImportFrom) and node.level:
+                    self.deferred_rebindings.update(
+                        alias.asname or alias.name for alias in node.names
+                    )
+            name = declaration_name(node)
+            if name:
+                names.add(name)
+                self.deferred_rebindings.add(name)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 scope_names = _ScopeNames()
                 for statement in node.body:
                     scope_names.visit(statement)
                 self.global_rebindings.update(scope_names.names & scope_names.globals)
-        names = (
-            {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-            | {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
-            | {
-                node.name
-                for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            }
-            | {
-                alias.asname or alias.name.split(".")[0]
-                for node in ast.walk(tree)
-                if isinstance(node, (ast.Import, ast.ImportFrom))
-                for alias in node.names
-            }
-        )
-        names.update(
-            name
-            for node in ast.walk(tree)
-            for name in (getattr(node, "name", None), getattr(node, "rest", None))
-            if isinstance(name, str)
-        )
+            for annotation in (getattr(node, "annotation", None), getattr(node, "returns", None)):
+                if annotation is not None:
+                    self.annotation_calls.update(
+                        call for call in ast.walk(annotation) if isinstance(call, ast.Call)
+                    )
         self.leading_aliases: set[str] = set()
         for index, node in enumerate(tree.body):
             if (
@@ -351,73 +336,52 @@ class _PathFixer(OSPathDetector):
         if function == "join":
             if not node.args:
                 return
-        elif function not in METHODS or len(node.args) != 1:
+        elif function not in REPLACEMENTS or len(node.args) != 1:
             return
-        if (
-            function == "isabs"
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value.startswith(("/", "\\"))
-        ):
+        values = [arg.value for arg in node.args]
+        suffix, wraps_str = REPLACEMENTS[function]
+        if function == "isabs" and values[0].startswith(("/", "\\")):
             # Older Windows os.path accepts roots without drives; pathlib does not.
             return
-        if function in {"join", "dirname", "expanduser"} and (
+        if wraps_str and (
             any("str" in scope for scope in self.scopes)
             or "str" in self.global_rebindings
             or ("generator" in self.scope_kinds and "str" in self.deferred_rebindings)
         ):
             return
-        if function in {"join", "dirname", "expanduser"} and any(
-            isinstance(arg, ast.Constant)
-            and isinstance(arg.value, str)
-            and arg.value.startswith("./")
-            for arg in node.args
-        ):
+        if wraps_str and any(value.startswith("./") for value in values):
             return
-        if sys.platform == "win32" and function in {"join", "basename", "dirname", "expanduser"}:
-            literal_args = [
-                arg.value
-                for arg in node.args
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-            ]
-            if any(
-                ntpath.basename(value) != PureWindowsPath(value).name
-                if function == "basename"
-                else ntpath.dirname(value) != str(PureWindowsPath(value).parent)
-                if function == "dirname"
-                else value != str(PureWindowsPath(value))
-                for value in literal_args
-            ) or (
-                function == "join"
-                and len(literal_args) == len(node.args)
-                and ntpath.join(*literal_args) != str(PureWindowsPath(*literal_args))
-            ):
-                # String-returning calls can retain literal spellings normalized by pathlib.
-                return
+        if (
+            self.platform == "win32"
+            and function != "isabs"
+            and (
+                any(
+                    ntpath.basename(value) != PureWindowsPath(value).name
+                    if function == "basename"
+                    else ntpath.dirname(value) != str(PureWindowsPath(value).parent)
+                    if function == "dirname"
+                    else value != str(PureWindowsPath(value))
+                    for value in values
+                )
+                or (function == "join" and ntpath.join(*values) != str(PureWindowsPath(*values)))
+            )
+        ):
+            # String-returning calls can retain literal spellings normalized by pathlib.
+            return
         # These literal spellings have different string results under pathlib.
         if function != "isabs" and any(
-            isinstance(arg, ast.Constant)
-            and isinstance(arg.value, str)
-            and (
-                arg.value in {"", ".", ".."}
-                or arg.value.endswith(("/", "\\", "/.", "/..", "\\.", "\\.."))
-                or "//" in arg.value
-                or "/./" in arg.value
+            (
+                value in {"", ".", ".."}
+                or value.endswith(("/", "\\", "/.", "/..", "\\.", "\\.."))
+                or "//" in value
+                or "/./" in value
             )
-            for arg in node.args
+            for value in values
         ):
             return
-        if (
-            function == "dirname"
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-            and "/" not in node.args[0].value
-        ):
+        if function == "dirname" and "/" not in values[0]:
             return
-        if (
-            function == "expanduser"
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value.startswith("~")
-        ):
+        if function == "expanduser" and values[0].startswith("~"):
             # Home values can contain spelling that pathlib normalizes, and
             # os.path leaves unknown users unchanged where Path.expanduser raises.
             return
@@ -428,17 +392,15 @@ class _PathFixer(OSPathDetector):
         constructor = self.constructor()
         # Replace only the callee span, retaining wrapping parentheses and comments.
         call = (
-            self.source.render(start, function_start)
+            self.source.content[start:function_start]
             + constructor
-            + self.source.render(function_end, end)
+            + self.source.content[function_end:end]
         )
-        if function == "join":
-            replacement = f"str({call})"
-        else:
-            replacement = f"{call}.{METHODS[function]}"
-            if function in {"dirname", "expanduser"}:
-                replacement = f"str({replacement})"
-        self.source.replace(start, end, replacement)
+        replacement = f"{call}{suffix}"
+        if wraps_str:
+            replacement = f"str({replacement})"
+        # A resolved callee and literal-only arguments contain no nested call edits.
+        self.source.edits.append((start, end, replacement))
         self.count += 1
 
 
@@ -718,12 +680,13 @@ def _clean_imports(content: str) -> tuple[str, int]:
     return source.render(0, len(content)), count
 
 
-def fix_content(content: str) -> tuple[str, int]:
+def fix_content(content: str, *, platform: str = sys.platform) -> tuple[str, int]:
     """Rewrite supported imported os.path calls and update their imports.
 
     Collect attribute mutations before editing calls in deferred function bodies.
 
     :param str content: Python source to parse and transform.
+    :param str platform: Target platform for path spelling checks; defaults to this host.
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
@@ -744,7 +707,7 @@ def fix_content(content: str) -> tuple[str, int]:
         return content, 0
     mutations = MutationCollector()
     mutations.visit(tree)
-    fixer = _PathFixer(content, tree, mutations)
+    fixer = _PathFixer(content, tree, mutations, platform)
     fixer.visit(tree)
     updated = fixer.source.render(0, len(content))
     updated, import_count = _clean_imports(updated)

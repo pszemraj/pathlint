@@ -134,14 +134,8 @@ def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
         ("expanduser", ("C:.",)),
     ],
 )
-def test_windows_separator_spellings_stay_unchanged(
-    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
-) -> None:
+def test_windows_separator_spellings_stay_unchanged(method: str, args: tuple[str, ...]) -> None:
     """Keep literal spellings whose Windows string results pathlib normalizes."""
-    from types import SimpleNamespace
-
-    from pathlint import autofix
-
     original_result = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
     replacement_result = (
@@ -151,8 +145,7 @@ def test_windows_separator_spellings_stay_unchanged(
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )
-    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
-    assert fix_content(original) == (original, 0)
+    assert fix_content(original, platform="win32") == (original, 0)
 
 
 @pytest.mark.parametrize(
@@ -179,13 +172,9 @@ def test_windows_separator_spellings_stay_unchanged(
     ],
 )
 def test_windows_exact_separator_spellings_remain_supported(
-    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
+    method: str, args: tuple[str, ...]
 ) -> None:
     """Retain supported Windows literals when their string results are exact."""
-    from types import SimpleNamespace
-
-    from pathlint import autofix
-
     expected = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
     replacement_result = (
@@ -195,8 +184,7 @@ def test_windows_exact_separator_spellings_remain_supported(
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )
-    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
-    updated, count = fix_content(original)
+    updated, count = fix_content(original, platform="win32")
     assert count > 0
     assert updated != original
 
