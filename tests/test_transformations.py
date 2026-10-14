@@ -8,6 +8,7 @@ import sys
 from pathlib import Path, PureWindowsPath
 from textwrap import indent
 from types import ModuleType
+from typing import Optional, Union
 
 import pytest
 
@@ -380,6 +381,317 @@ def test_inexact_literal_calls_preserve_results(expression: str) -> None:
     updated, count = fix_content(source)
     assert count == 0
     assert updated == source
+    assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize("method", ["isabs", "basename", "dirname", "expanduser", "join"])
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "b'directory/' + b'file'",
+        "b'directory/file' * 1",
+        "1 * b'directory/file'",
+        "b'directory/%s' % b'file'",
+        "b'directory/file'[:]",
+        "b'directory/file'[slice(None)]",
+        "(b'directory/' + b'file')[1:]",
+        "[b'directory/file'][0]",
+        "(b'directory/file',)[0]",
+        "{'path': b'directory/file'}['path']",
+        "[b'directory/file'][0:1][0]",
+        "(b'directory/file',)[0:1][0]",
+        "[[b'directory/file']][0][0]",
+        "[*[b'directory/file']][0]",
+        "{**{'path': b'directory/file'}}['path']",
+        "b'directory/file'.split(b':')[0]",
+        "b'directory/file'.partition(b':')[0]",
+        "os.path.splitext(b'directory/file')[0]",
+        "os.path.split(b'directory/file')[1]",
+        "os.fsencode('directory/file')",
+        "bytes.upper(b'directory/file')",
+        "next(iter([b'directory/file']))",
+        "[part for part in [b'directory/file']][0]",
+        "[b'directory/file' for _ in range(1)][0]",
+        "next(iter({b'directory/file': None}))",
+        "next(iter({b'directory/file': None for _ in range(1)}))",
+        "next(iter({b'directory/file': None}.keys()))",
+        "list({b'directory/file': None}.items())[0][0]",
+        "b'directory/file' if flag else b'other/file'",
+        "'directory/file' if not flag else b'directory/file'",
+        "b'' or b'directory/file'",
+        "flag and b'directory/file'",
+        "(value := b'directory/file')",
+        "bytes(b'directory/file')",
+        "bytes('directory/file', 'utf-8')",
+        "'directory/file'.encode()",
+        "('directory/' + 'file').encode('utf-8')",
+        "f'directory/{name}'.encode()",
+        "bytes.fromhex('612f62')",
+        "b'directory/file'.upper()",
+        "b'directory/other'.replace(b'other', b'file')",
+        "b' directory/file '.strip()",
+        "b'/'.join([b'directory', b'file'])",
+        "os.path.join(b'directory', b'file')",
+        "os.path.normpath(path=b'directory/file')",
+        "os.path.join(a=b'directory/file')",
+        "os.path.relpath(path=b'directory/file', start=b'directory')",
+        "os.path.join(*[b'directory', b'file'])",
+        "os.path.normpath(**{'path': b'directory/file'})",
+    ],
+)
+def test_byte_path_expressions_preserve_results(method: str, argument: str) -> None:
+    source = f"import os\nflag = True\nname = 'file'\nresult = os.path.{method}({argument})\n"
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source)
+
+
+def test_join_with_byte_expression_in_later_argument_stays_unchanged() -> None:
+    source = (
+        "import os\ndirectory = b'directory'\nresult = os.path.join(directory, b'fi' + b'le')\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == b"directory/file"
+
+
+@pytest.mark.parametrize(
+    ("imports", "call"),
+    [
+        ("import os.path as paths", "paths.join(b'directory', b'file')"),
+        ("from os.path import join as connect", "connect(b'directory', b'file')"),
+        ("import os.path as paths", "paths.join(a=b'directory/file')"),
+        ("from os.path import normpath as normalize", "normalize(path=b'directory/file')"),
+        (
+            "from os.path import join",
+            "join(b'directory', b'file') if True else (join := None)",
+        ),
+        ("from os.path import join", "join(b'directory', b'file') or (join := None)"),
+        ("from os.path import join", "join((join := b'directory'), b'file')"),
+        ("import os.path as paths", "paths.splitext(b'directory/file')[0]"),
+        ("from os.path import split as divide", "divide(b'directory/file')[1]"),
+        ("from os import fsencode as encode_path", "encode_path('directory/file')"),
+        ("from builtins import bytes as make_bytes", "make_bytes([97, 47, 98])"),
+        ("from builtins import bytes as byte_type", "byte_type.upper(b'directory/file')"),
+        ("import os.path as paths", "paths.join(*[b'directory', b'file'])"),
+        ("import os.path as paths", "paths.normpath(**{'path': b'directory/file'})"),
+        ("import codecs", "codecs.decode(b'66696c65', 'hex')"),
+        ("import codecs as transforms", "transforms.decode(b'ZmlsZQ==', 'base64')"),
+        ("from codecs import decode as convert", "convert('66696c65', 'hex')"),
+        ("import base64", "base64.b64decode('ZGlyZWN0b3J5L2ZpbGU=')"),
+        ("import binascii", "binascii.unhexlify('6469726563746f72792f66696c65')"),
+        ("from base64 import b64decode as convert", "convert('ZGlyZWN0b3J5L2ZpbGU=')"),
+    ],
+)
+def test_nested_aliased_byte_path_calls_stay_unchanged(imports: str, call: str) -> None:
+    source = f"import os\n{imports}\nresult = os.path.basename({call})\n"
+    assert fix_content(source) == (source, 0)
+    assert isinstance(run(source), bytes)
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "'directory/' + 'file'",
+        "'directory/file' * 1",
+        "1 * 'directory/file'",
+        "'directory/%s' % 'file'",
+        "'directory/file'[:]",
+        "['directory/file'][0]",
+        "('directory/file',)[0]",
+        "{'path': 'directory/file'}['path']",
+        "['directory/file'][0:1][0]",
+        "('directory/file',)[0:1][0]",
+        "[['directory/file']][0][0]",
+        "'' or 'directory/file'",
+        "(value := 'directory/file')",
+        "f'directory/{\"file\"}'",
+    ],
+)
+def test_text_path_expressions_remain_supported(argument: str) -> None:
+    source = f"import os\nresult = os.path.basename({argument})\n"
+    updated, count = fix_content(source)
+    assert count == 1
+    assert run(updated) == run(source)
+
+
+@pytest.mark.parametrize("builtin", ["str", "repr", "ascii"])
+def test_imported_text_converters_are_conservatively_skipped(builtin: str) -> None:
+    source = (
+        f"import os\nfrom builtins import {builtin} as render\n"
+        "result = os.path.basename(render(b'directory/file'))\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert isinstance(run(source), str)
+
+
+@pytest.mark.parametrize("name", ["str", "repr", "ascii", "chr", "custom_wrapper"])
+@pytest.mark.parametrize("binding", ["module", "global", "generator"])
+def test_custom_byte_wrappers_stay_unchanged(name: str, binding: str) -> None:
+    call = f"os.path.basename({name}(b'directory/file'))"
+    if binding == "global":
+        body = (
+            f"def rebind():\n    global {name}\n    {name} = lambda value: value\n"
+            f"rebind()\nresult = {call}\n"
+        )
+    elif binding == "generator":
+        body = (
+            f"deferred = ({call} for _ in [0])\n{name} = lambda value: value\n"
+            "result = next(deferred)\n"
+        )
+    else:
+        body = f"{name} = lambda value: value\nresult = {call}\n"
+    source = "import os\n" + body
+    assert fix_content(source) == (source, 0)
+    assert run(source) == b"file"
+
+
+@pytest.mark.parametrize(
+    ("method", "operator"),
+    [
+        ("__eq__", "=="),
+        ("__ne__", "!="),
+        ("__lt__", "<"),
+        ("__le__", "<="),
+        ("__gt__", ">"),
+        ("__ge__", ">="),
+    ],
+)
+def test_rich_comparison_byte_results_stay_unchanged(method: str, operator: str) -> None:
+    source = (
+        "import os\n"
+        f"class Comparison:\n    def {method}(self, other):\n        return b'directory/file'\n"
+        f"result = os.path.basename(Comparison() {operator} 0)\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == b"file"
+
+
+def test_byte_keys_in_unpacked_mapping_paths_are_conservatively_skipped() -> None:
+    source = "import os\nresult = os.path.basename({**{b'path': 'directory/file'}}[b'path'])\n"
+    assert fix_content(source) == (source, 0)
+    assert run(source) == "file"
+
+
+@pytest.mark.parametrize("value", [b"directory/file", "directory/file"])
+def test_unknown_call_return_types_stay_unchanged(value: Union[bytes, str]) -> None:
+    source = (
+        f"import os\ndef get_path():\n    return {value!r}\nresult = os.path.basename(get_path())\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == (b"file" if isinstance(value, bytes) else "file")
+
+
+@pytest.mark.parametrize("method", ["decode", "hex"])
+@pytest.mark.parametrize("rebind_fsencode", [False, True])
+def test_unknown_receiver_text_method_names_stay_unchanged(
+    method: str, rebind_fsencode: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        f"import os\nclass Decoder:\n    def {method}(self):\n        return b'directory/file'\n"
+        "def get_decoder():\n    return Decoder()\n"
+        + ("os.fsencode = lambda value: Decoder()\n" if rebind_fsencode else "")
+        + "result = os.path.basename("
+        + ("os.fsencode('x')" if rebind_fsencode else "get_decoder()")
+        + f".{method}())\n"
+    )
+    assert fix_content(source) == (source, 0)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsencode", os.fsencode)
+        assert run(source) == b"file"
+
+
+@pytest.mark.parametrize("method", ["decode", "hex"])
+@pytest.mark.parametrize("factory", ["bytes(Source())", "'x'.encode('pathlint-review-codec')"])
+def test_byte_subclass_text_methods_stay_unchanged(method: str, factory: str) -> None:
+    source = (
+        "import os, codecs\n"
+        f"class BytePath(bytes):\n    def {method}(self):\n        return b'directory/file'\n"
+        "class Source:\n    def __bytes__(self):\n        return BytePath(b'x')\n"
+        "def lookup(name):\n"
+        "    if name == 'pathlint_review_codec':\n"
+        "        return codecs.CodecInfo(name=name, encode=lambda value, errors='strict': "
+        "(BytePath(b'x'), len(value)), decode=None)\n"
+        "codecs.register(lookup)\n"
+        f"result = os.path.basename({factory}.{method}())\n"
+    )
+    assert fix_content(source) == (source, 0)
+    # Isolate the codec registration from the test runner's codec registry.
+    completed = subprocess.run(
+        [sys.executable, "-c", source + "assert result == b'file'\n"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "bytes('directory/file', 'utf-8').decode()",
+        "'directory/file'.encode().decode()",
+        "{b'path': 'directory/file'}[b'path']",
+        "{b'path': 'directory/file' for _ in range(1)}[b'path']",
+        "'directory/file' if b'condition' else 'other/file'",
+        "'directory/file' if True else b'other/file'",
+        "b'other/file' if False else 'directory/file'",
+        "'directory/file' or b'other/file'",
+        "b'' or 'directory/file'",
+        "b'condition' and 'directory/file'",
+        "b'directory/file'.decode()",
+        "f'directory/{b\"file\"!s}'",
+        "str(b'directory/file')",
+        "repr(b'directory/file')",
+        "ascii(b'directory/file')",
+        "b'directory/file'.hex()",
+        "'directory/%s' % b'file'",
+        "chr(b'directory/file'[0]) + '/file'",
+    ],
+)
+def test_text_expressions_with_bytes_or_opaque_calls_are_conservatively_skipped(
+    argument: str,
+) -> None:
+    source = f"import os\nresult = os.path.basename({argument})\n"
+    assert fix_content(source) == (source, 0)
+    assert isinstance(run(source), str)
+
+
+@pytest.mark.parametrize(("left", "parent"), [("7", "object"), ("'directory/%s'", "str")])
+def test_reflected_modulo_byte_results_stay_unchanged(left: str, parent: str) -> None:
+    source = (
+        "import os\n"
+        f"class Remainder({parent}):\n    def __rmod__(self, other):\n"
+        "        return b'directory/file'\n"
+        f"result = os.path.basename({left} % Remainder())\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == b"file"
+
+
+def test_text_subclass_index_byte_results_stay_unchanged() -> None:
+    source = (
+        "import os\nclass TextPath(str):\n    def __getitem__(self, index):\n"
+        "        return b'directory/file'\n"
+        "class Source:\n    def __str__(self):\n        return TextPath('directory/file')\n"
+        "result = os.path.basename(str(Source())[0])\n"
+    )
+    assert fix_content(source) == (source, 0)
+    assert run(source) == b"file"
+
+
+@pytest.mark.parametrize(
+    ("imports", "argument"),
+    [
+        ("from pathlib import Path", "Path('directory/file')"),
+        ("from pathlib import PurePath as P", "P('directory/file')"),
+        ("from os.path import join as connect", "connect('directory', 'file')"),
+        ("from os.path import splitext as split", "split('directory/file.txt')[0]"),
+    ],
+)
+def test_known_path_return_contracts_remain_supported(imports: str, argument: str) -> None:
+    source = f"import os\n{imports}\nresult = os.path.basename({argument})\n"
+    updated, count = fix_content(source)
+    assert count > 0
     assert run(updated) == run(source)
 
 
@@ -1002,7 +1314,7 @@ def test_import_cleanup_leaves_valid_suites_and_semicolons(source: str) -> None:
     ],
 )
 def test_import_cleanup_preserves_module_docstring(
-    header: str, expected_doc: str | None, keeps_statement: bool, migrate_call: bool
+    header: str, expected_doc: Optional[str], keeps_statement: bool, migrate_call: bool
 ) -> None:
     source = header + ("filename = basename('directory/file')\n" if migrate_call else "")
     source += "result = __doc__\n"

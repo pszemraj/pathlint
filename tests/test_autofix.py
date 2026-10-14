@@ -326,13 +326,17 @@ class TestFixFileEdgeCases:
     def test_join_with_nested_commas(self, tmp_path: Path) -> None:
         """Nested commas inside args should not break parsing."""
         test_file = tmp_path / "nested_commas.py"
-        test_file.write_text(
-            "import os.path\npath = os.path.join('a', func('b', 'c'), ['d', 'e'][0])\n"
-        )
+        original = "import os.path\npath = os.path.join('a', '%s%s' % ('b', 'c'), ['d', 'e'][0])\n"
+        test_file.write_text(original)
 
         fix_file(test_file, dry_run=False)
         result = test_file.read_text()
-        assert "str(Path('a', func('b', 'c'), ['d', 'e'][0]))" in result
+        assert "str(Path('a', '%s%s' % ('b', 'c'), ['d', 'e'][0]))" in result
+        original_namespace: dict[str, object] = {}
+        fixed_namespace: dict[str, object] = {}
+        exec(compile(original, "<original>", "exec"), original_namespace)
+        exec(compile(result, "<fixed>", "exec"), fixed_namespace)
+        assert fixed_namespace["path"] == original_namespace["path"]
 
     def test_join_with_trailing_comma(self, tmp_path: Path) -> None:
         """Trailing commas in join args should be preserved."""
