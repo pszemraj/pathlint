@@ -82,7 +82,7 @@ def discover_files(
     git = shutil.which("git") if respect_gitignore else None
 
     def excluded(candidate: Path, alias: Path, *, directory: bool = False) -> bool:
-        """Check default directory exclusions and both spellings of explicit patterns.
+        """Check default and explicit exclusions against both path spellings.
 
         :param Path candidate: Resolved path being considered for automatic discovery.
         :param Path alias: Input path spelling before resolving symlinks.
@@ -90,8 +90,10 @@ def discover_files(
         :return bool: True if default or explicit exclusions reject the candidate.
         """
         directories = candidate if directory else candidate.parent
+        alias_directories = alias if directory else alias.parent
         return (
             is_excluded(directories, tuple(default_excludes), directory=True)
+            or is_excluded(alias_directories, tuple(default_excludes), directory=True)
             or is_excluded(candidate, exclude_patterns, directory=directory)
             or is_excluded(alias, exclude_patterns, directory=directory)
         )

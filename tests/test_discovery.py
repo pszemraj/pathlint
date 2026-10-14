@@ -374,6 +374,23 @@ def test_directory_file_symlinks_are_normalized(
 
 
 @pytest.mark.parametrize("respect_gitignore", [False, True])
+def test_directory_symlink_alias_honors_default_exclusions(
+    repo: Path, respect_gitignore: bool
+) -> None:
+    wanted = write(repo, "real/nested/keep.py")
+    alias = repo / ".venv"
+    alias.symlink_to(repo / "real", target_is_directory=True)
+    assert discover_files([alias / "nested"], respect_gitignore=respect_gitignore) == ([], [])
+    assert discover_files(
+        [alias / "nested"], default_excludes=(), respect_gitignore=respect_gitignore
+    ) == ([wanted], [])
+    assert discover_files([alias / "nested/keep.py"], respect_gitignore=respect_gitignore) == (
+        [wanted],
+        [],
+    )
+
+
+@pytest.mark.parametrize("respect_gitignore", [False, True])
 @pytest.mark.parametrize("pattern", ["alias/", "alias/*.py", "./alias/deep", "alias/*/no.py"])
 def test_directory_symlink_preserves_root_and_descendant_alias_patterns(
     repo: Path, pattern: str, respect_gitignore: bool
