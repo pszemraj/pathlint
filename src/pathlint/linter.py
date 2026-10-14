@@ -390,9 +390,21 @@ class OSPathDetector(ast.NodeVisitor):
     visit_AsyncFor = visit_For
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        """Visit an augmented assignment's value before updating its target."""
+        """Visit an augmented target's expressions before its value and name binding."""
+        if isinstance(node.target, ast.Attribute):
+            self.visit(node.target.value)
+        elif isinstance(node.target, ast.Subscript):
+            self.visit(node.target.value)
+            self.visit(node.target.slice)
         self.visit(node.value)
-        self.visit(node.target)
+        if isinstance(node.target, ast.Name):
+            self.visit(node.target)
+        elif isinstance(node.target, ast.Attribute):
+            self.mutated_attributes.update(
+                possible
+                for possible in self._mutation_origins(node.target)
+                if possible == "os.path" or possible.startswith(("os.path.", "pathlib."))
+            )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         """Visit the exception type, bind its alias, and traverse the handler."""

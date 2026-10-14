@@ -46,6 +46,63 @@ def test_dictionary_entries_follow_runtime_evaluation_order(
 
 
 @pytest.mark.parametrize(
+    ("setup", "statement", "result", "expected", "changes"),
+    [
+        (
+            "values = {custom: 0}",
+            "values[(os := custom)] += os.path.exists('missing')",
+            "values[custom]",
+            10,
+            False,
+        ),
+        (
+            "",
+            "(os := custom).value += os.path.exists('missing')",
+            "custom.value",
+            10,
+            False,
+        ),
+        (
+            "value = 0",
+            "value += os.path.exists('missing')",
+            "value",
+            0,
+            True,
+        ),
+        (
+            "values = {False: 0}",
+            "values[os.path.exists('missing')] += (os := custom).value + 10",
+            "values[False]",
+            10,
+            True,
+        ),
+    ],
+)
+def test_augmented_targets_follow_runtime_evaluation_order(
+    setup: str, statement: str, result: str, expected: int, changes: bool
+) -> None:
+    source = (
+        "import os\nfrom types import SimpleNamespace\n"
+        "class Custom:\n"
+        "    path = SimpleNamespace(exists=lambda value: 10)\n"
+        "    value = 0\n"
+        "custom = Custom()\n"
+        f"{setup}\n{statement}\nresult = {result}\n"
+    )
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    assert bool(offenses(source)) is changes
+    for content in (source, updated):
+        namespace: dict[str, object] = {}
+        exec(compile(content, "<augmented>", "exec", dont_inherit=True), namespace)
+        assert namespace["result"] == expected
+
+
+def test_augmented_name_binding_follows_its_value() -> None:
+    assert set(offenses("import os\nos += os.path.exists('missing')")) == {2}
+
+
+@pytest.mark.parametrize(
     ("source", "expected"),
     [
         ("import os as system\nresult = system.path.exists('file')", {2}),
