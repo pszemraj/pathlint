@@ -8,7 +8,7 @@ import difflib
 import sys
 from pathlib import Path
 
-from pathlint.linter import OSPathDetector
+from pathlint.linter import OSPathDetector, _ScopeNames
 
 METHODS = {
     "exists": "exists()",
@@ -235,28 +235,47 @@ class _PathFixer(OSPathDetector):
     visit_TryStar = visit_Try
 
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
-        """Visit a for loop and account for the possibility of zero iterations.
+        """Visit for suites without assuming bindings stay unchanged across iterations.
 
-        Args:
-            node: Synchronous or asynchronous for statement to inspect.
+        :param ast.For | ast.AsyncFor node: Synchronous or asynchronous for statement.
         """
+        self.visit(node.iter)
         before = self.scopes[-1].copy()
-        super().visit_For(node)
-        self.merge_bindings([before, self.scopes[-1].copy()])
+        names = _ScopeNames()
+        for statement in [node.target, *node.body]:
+            names.visit(statement)
+        self.scopes[-1].update(dict.fromkeys(names.names))
+        entry = self.scopes[-1].copy()
+        self.visit(node.target)
+        for statement in node.body:
+            self.visit(statement)
+        body = self.scopes[-1].copy()
+        self.merge_bindings([before, entry, body])
+        for statement in node.orelse:
+            self.visit(statement)
+        self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     visit_AsyncFor = visit_For
 
     def visit_While(self, node: ast.While) -> None:
-        """Visit a while loop and merge its bindings with the pre-loop state.
+        """Visit while suites without assuming bindings stay unchanged across iterations.
 
-        Args:
-            node: While statement whose body may never execute.
+        :param ast.While node: While statement whose body may never execute.
         """
-        self.visit(node.test)
         before = self.scopes[-1].copy()
-        for statement in (*node.body, *node.orelse):
+        names = _ScopeNames()
+        for statement in [node.test, *node.body]:
+            names.visit(statement)
+        self.scopes[-1].update(dict.fromkeys(names.names))
+        self.visit(node.test)
+        entry = self.scopes[-1].copy()
+        for statement in node.body:
             self.visit(statement)
-        self.merge_bindings([before, self.scopes[-1].copy()])
+        body = self.scopes[-1].copy()
+        self.merge_bindings([before, entry, body])
+        for statement in node.orelse:
+            self.visit(statement)
+        self.merge_bindings([before, entry, body, self.scopes[-1].copy()])
 
     def visit_Match(self, node: ast.AST) -> None:
         """Merge each match case with the possibility that no case executes.

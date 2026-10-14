@@ -2,6 +2,7 @@
 
 import ast
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 
@@ -345,3 +346,205 @@ def test_conditional_imports_do_not_override_custom_objects(block: str) -> None:
     assert count == 0
     assert updated == source
     assert run(updated) == run(source) == "custom"
+
+
+@pytest.mark.parametrize(
+    "loop",
+    ["for item in values", "while values and values.pop()", "async for item in iterate(values)"],
+)
+@pytest.mark.parametrize(
+    ("values", "body", "alternative", "following", "expected", "changes"),
+    [
+        (
+            "[]",
+            "import os",
+            "result = os.path.exists('missing')",
+            "return result",
+            "custom",
+            False,
+        ),
+        (
+            "[]",
+            "pass",
+            "import os\n        result = os.path.exists('missing')",
+            "return result",
+            False,
+            True,
+        ),
+        (
+            "[True]",
+            "break",
+            "import os",
+            "return os.path.exists('missing')",
+            "custom",
+            False,
+        ),
+        (
+            "[True]",
+            "break\n        import os",
+            "import os",
+            "return os.path.exists('missing')",
+            "custom",
+            False,
+        ),
+    ],
+)
+def test_loop_else_bindings_preserve_results(
+    loop: str,
+    values: str,
+    body: str,
+    alternative: str,
+    following: str,
+    expected: object,
+    changes: bool,
+) -> None:
+    source = (
+        "import asyncio\n"
+        "from types import SimpleNamespace\n"
+        "async def iterate(values):\n"
+        "    for value in values:\n"
+        "        yield value\n"
+        "async def check():\n"
+        f"    values = {values}\n"
+        "    os = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        f"    {loop}:\n"
+        f"        {body}\n"
+        "    else:\n"
+        f"        {alternative}\n"
+        f"    {following}\n"
+        "result = asyncio.run(check())\n"
+    )
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    assert run(updated) == run(source) == expected
+
+
+@pytest.mark.parametrize(
+    "loop",
+    ["for item in (os := custom, [])[1]", "while (os := custom) and False"],
+)
+def test_loop_header_bindings_apply_before_else(loop: str) -> None:
+    source = (
+        "import os\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        f"{loop}:\n"
+        "    pass\n"
+        "else:\n"
+        "    result = os.path.exists('missing')\n"
+    )
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    assert run(updated) == run(source) == "custom"
+
+
+@pytest.mark.parametrize(
+    "loop",
+    ["for item in values", "while values and values.pop()", "async for item in iterate(values)"],
+)
+@pytest.mark.parametrize(
+    ("preamble", "body", "alternative", "following", "expected", "changes"),
+    [
+        (
+            "import os as alias\nresults = []",
+            "results.append(alias.path.exists('missing'))\nalias = custom",
+            "pass",
+            "return results",
+            [False, "custom"],
+            False,
+        ),
+        (
+            "import os\nfrom pathlib import Path as constructor\nresults = []",
+            "results.append(os.path.exists('missing'))\n"
+            "constructor = lambda value: SimpleNamespace(exists=lambda: 'custom')",
+            "pass",
+            "return results",
+            [False, False],
+            True,
+        ),
+        (
+            "import os",
+            "os = custom\nbreak\nimport os",
+            "import os",
+            "return os.path.exists('missing')",
+            "custom",
+            False,
+        ),
+    ],
+)
+def test_loop_rebindings_preserve_results(
+    loop: str,
+    preamble: str,
+    body: str,
+    alternative: str,
+    following: str,
+    expected: object,
+    changes: bool,
+) -> None:
+    source = (
+        "import asyncio\n"
+        "from types import SimpleNamespace\n"
+        "async def iterate(values):\n"
+        "    for value in values:\n"
+        "        yield value\n"
+        "async def check():\n"
+        "    values = [True, True]\n"
+        "    custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        + indent(preamble + "\n", "    ")
+        + f"    {loop}:\n"
+        + indent(body + "\n", "        ")
+        + "    else:\n"
+        + indent(alternative + "\n", "        ")
+        + indent(following + "\n", "    ")
+        + "result = asyncio.run(check())\n"
+    )
+    updated, count = fix_content(source)
+    assert bool(count) is changes
+    assert run(updated) == run(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("binding_expression", "binding_statement"),
+    [("", "    alias = custom\n"), (" and (alias := custom)", "")],
+)
+def test_while_test_rebinding_preserves_results(
+    binding_expression: str, binding_statement: str
+) -> None:
+    source = (
+        "import os as alias\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "values = [True, True]\n"
+        "result = 0\n"
+        f"while alias.path.exists('missing') is False{binding_expression} "
+        "and values and values.pop():\n"
+        "    result += 1\n" + binding_statement
+    )
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    assert run(updated) == run(source) == 1
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "def bind(value=(alias := custom)):\n    return value",
+        "@((alias := custom), lambda function: function)[1]\ndef bind():\n    pass",
+        "class Bind(((alias := custom), object)[1]):\n    pass",
+    ],
+)
+def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> None:
+    source = (
+        "import os as alias\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(exists=lambda value: 'custom'))\n"
+        "result = []\n"
+        "for value in [1, 2]:\n"
+        "    result.append(alias.path.exists('missing'))\n" + indent(definition + "\n", "    ")
+    )
+    updated, count = fix_content(source)
+    assert count == 0
+    assert updated == source
+    assert run(updated) == run(source) == [False, "custom"]

@@ -34,12 +34,40 @@ class _ScopeNames(ast.NodeVisitor):
         """Collect the aliases introduced by a from-import statement."""
         self.names.update(alias.asname or alias.name for alias in node.names)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Collect a function or class name without entering its body."""
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """Collect function bindings and enclosing expressions without entering its body.
+
+        :param ast.FunctionDef | ast.AsyncFunctionDef node: Function definition to inspect.
+        """
         self.names.add(node.name)
+        for expression in (
+            *node.decorator_list,
+            *node.args.defaults,
+            *node.args.kw_defaults,
+            node.returns,
+        ):
+            if expression:
+                self.visit(expression)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            node.args.vararg,
+            node.args.kwarg,
+        ):
+            if argument and argument.annotation:
+                self.visit(argument.annotation)
 
     visit_AsyncFunctionDef = visit_FunctionDef
-    visit_ClassDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Collect class bindings and enclosing expressions without entering its body.
+
+        :param ast.ClassDef node: Class definition to inspect.
+        """
+        self.names.add(node.name)
+        for expression in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(expression)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         """Visit lambda defaults without collecting its parameters or body."""
