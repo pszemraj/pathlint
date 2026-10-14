@@ -164,6 +164,15 @@ class _PathFixer(OSPathDetector):
         scopes = [{**scope, **dict.fromkeys(self.deferred_rebindings)} for scope in self.scopes]
         self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
 
+    def resolve_name(self, name: str) -> str | None:
+        """Exclude rebound aliases from deferred generator expressions.
+
+        :return str | None: Import spelling, or None for a rebound or unresolved name.
+        """
+        if "generator" in self.scope_kinds and name in self.deferred_rebindings:
+            return None
+        return super().resolve_name(name)
+
     def constructor(self) -> str:
         """Reuse a visible pathlib constructor or request an import for a new alias.
 
@@ -354,8 +363,9 @@ class _PathFixer(OSPathDetector):
                 return
         elif function not in METHODS or len(node.args) != 1:
             return
-        if function in {"join", "dirname", "expanduser"} and any(
-            "str" in scope for scope in self.scopes
+        if function in {"join", "dirname", "expanduser"} and (
+            any("str" in scope for scope in self.scopes)
+            or ("generator" in self.scope_kinds and "str" in self.deferred_rebindings)
         ):
             return
         if function in {"join", "dirname", "expanduser"} and any(

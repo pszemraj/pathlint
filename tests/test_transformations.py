@@ -314,6 +314,15 @@ def test_imports_defined_after_function_are_not_rewritten(source: str) -> None:
         "    def check():\n        return osp.exists('file')\n"
         "    writer()\n    return check()\n"
         "result = outer()\n",
+        "import os.path as osp\n"
+        "checks = (osp.exists('file') for _ in [0])\n"
+        "osp = custom\nresult = next(checks)\n",
+        "import os.path as osp\n"
+        "checks = ('custom' for _ in [0] if osp.exists('file') == 'custom')\n"
+        "osp = custom\nresult = next(checks)\n",
+        "import os.path as osp\n"
+        "checks = (value for _ in [0] for value in [osp.exists('file')])\n"
+        "osp = custom\nresult = next(checks)\n",
     ],
 )
 def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
@@ -321,10 +330,18 @@ def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
         "from types import SimpleNamespace\n"
         "custom = SimpleNamespace(exists=lambda value: 'custom')\n" + body
     )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == "custom"
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == "custom"
 
 
+@pytest.mark.parametrize(
+    ("definition", "invocation"),
+    [
+        ("def check():\n    return osp.join('directory', 'file')\n", "check()"),
+        ("checks = (osp.join('directory', 'file') for _ in [0])\n", "next(checks)"),
+    ],
+)
 @pytest.mark.parametrize(
     "binding",
     [
@@ -334,15 +351,13 @@ def test_reassigned_enclosing_aliases_are_not_rewritten(body: str) -> None:
         "def writer():\n    global str\n    from builtins import repr as str\nwriter()",
     ],
 )
-def test_deferred_string_conversion_respects_later_builtin_shadowing(binding: str) -> None:
-    source = (
-        "import os.path as osp\n"
-        "def check():\n    return osp.join('directory', 'file')\n"
-        f"{binding}\n"
-        "result = check()\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == str(Path("directory") / "file")
+def test_deferred_string_conversion_respects_later_builtin_shadowing(
+    binding: str, definition: str, invocation: str
+) -> None:
+    source = f"import os.path as osp\n{definition}{binding}\nresult = {invocation}\n"
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == str(Path("directory") / "file")
 
 
 def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> None:
@@ -364,6 +379,11 @@ def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> No
         "from os.path import exists\n"
         "def check():\n    return exists('missing')\n"
         "result = check()\n",
+        "import os.path as osp\n"
+        "checks = (osp.exists('missing') for _ in [0])\nresult = next(checks)\n",
+        "import os.path as osp\n"
+        "checks = (value for value in [osp.exists('missing')])\n"
+        "osp = None\nresult = next(checks)\n",
         "import os.path as osp\ndef check():\n    return osp.exists('missing')\nresult = check()\n",
         "import os.path as osp\ncheck = lambda: osp.exists('missing')\nresult = check()\n",
         "def outer():\n    import os.path as osp\n"

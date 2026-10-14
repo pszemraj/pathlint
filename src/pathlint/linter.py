@@ -437,14 +437,16 @@ class OSPathDetector(ast.NodeVisitor):
         names = _ScopeNames()
         names.visit(node)
         owner = len(self.scopes) - 1
-        while self.scope_kinds[owner] == "comprehension":
+        while self.scope_kinds[owner] in {"comprehension", "generator"}:
             owner -= 1
         # Walrus targets escape comprehension scopes. Invalidate before inspecting
         # repeated iterations; generator consumption and empty iterables are unknown.
         for name in names.names:
             self.scopes[owner][name] = None
         self.scopes.append({})
-        self.scope_kinds.append("comprehension")
+        self.scope_kinds.append(
+            "generator" if isinstance(node, ast.GeneratorExp) else "comprehension"
+        )
         self.scope_globals.append(set())
         for index, generator in enumerate(node.generators):
             if index:
