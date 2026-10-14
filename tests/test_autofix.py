@@ -347,14 +347,14 @@ class TestFixFileEdgeCases:
         assert "os.path.join(root, *parts)" in result
 
     def test_file_with_syntax_error(self, tmp_path: Path) -> None:
-        """Handle files with syntax errors gracefully."""
+        """Leave files with syntax errors unchanged."""
         test_file = tmp_path / "broken.py"
-        test_file.write_text("import os.path\nif os.path.isabs(  # missing closing")
+        original = "import os.path\nif os.path.isabs(  # missing closing"
+        test_file.write_text(original)
 
-        # Should not crash
         count = fix_file(test_file, dry_run=False)
-        # Regex replacements may still work despite syntax errors
-        assert count >= 0
+        assert count == 0
+        assert test_file.read_text() == original
 
     def test_unicode_content(self, tmp_path: Path) -> None:
         """Handle files with unicode content."""
@@ -424,8 +424,8 @@ class TestReplacementOrder:
         # 3-arg join
         assert "str(_Path('x', 'y', 'z'))" in result
 
-    def test_import_replacement_comprehensive(self, tmp_path: Path) -> None:
-        """Test all import replacement patterns."""
+    def test_import_only_file_stays_unchanged(self, tmp_path: Path) -> None:
+        """Preserve imports when there are no calls to rewrite."""
         test_file = tmp_path / "imports.py"
         original = "from os.path import join, exists, dirname\n"
         test_file.write_text(original)
@@ -433,6 +433,4 @@ class TestReplacementOrder:
         count = fix_file(test_file, dry_run=False)
         assert count == 0
 
-        result = test_file.read_text()
-        assert result == original
-        assert "from pathlib import Path" not in result  # No unused replacement import.
+        assert test_file.read_text() == original
