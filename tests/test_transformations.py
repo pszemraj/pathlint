@@ -9,7 +9,7 @@ from textwrap import indent
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector
+from pathlint.linter import OSPathDetector, _lint_file
 
 
 def run(source: str) -> object:
@@ -113,16 +113,33 @@ def test_strings_comments_and_fstring_text_survive(tmp_path: Path) -> None:
     assert run(updated) == run(original)
 
 
-def test_unicode_offsets_and_multiline_comments(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_unicode_offsets_and_multiline_comments(
+    tmp_path: Path, separator: str, newline: str
+) -> None:
     original = (
+        f'"""Module {separator} documentation."""\n'
         "import os.path\n"
-        f"label = '🐍'; result = os.path.exists(\n    {str(tmp_path)!r},  # keep this comment\n)\n"
-    )
+        f"label = '🐍{separator}';\fresult = os.path.exists(\n    {str(tmp_path)!r},  # keep this comment\n)\n"
+    ).replace("\n", newline)
     updated, count = fix_content(original)
     assert count > 0
-    assert "label = '🐍';" in updated
+    assert f'"""Module {separator} documentation."""' in updated
+    assert f"label = '🐍{separator}';" in updated
     assert "# keep this comment" in updated
+    assert updated.count(newline) == original.count(newline)
+    assert "\n" not in updated.replace(newline, "")
     assert run(updated) == run(original)
+    target = tmp_path / "unicode.py"
+    with target.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(original)
+    assert _lint_file(target) == [
+        (2, "import os.path"),
+        (3, f"label = '🐍{separator}';\fresult = os.path.exists("),
+    ]
 
 
 def test_parenthesized_callable_comments_are_preserved(tmp_path: Path) -> None:

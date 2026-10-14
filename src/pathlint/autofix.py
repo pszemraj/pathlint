@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import difflib
 import sys
+from io import StringIO
 from pathlib import Path
 
 from pathlint.linter import OSPathDetector, _ScopeNames
@@ -30,7 +31,7 @@ class _Source:
         :param str content: Python source whose original character offsets identify edits.
         """
         self.content = content
-        self.lines = content.splitlines(keepends=True)
+        self.lines = list(StringIO(content, newline=""))
         self.starts = [0]
         for line in self.lines:
             self.starts.append(self.starts[-1] + len(line))
@@ -91,7 +92,7 @@ class _PathFixer(OSPathDetector):
         :param str content: Original Python source to edit.
         :param ast.Module tree: Parsed module used to identify names and leading imports.
         """
-        super().__init__(content.splitlines())
+        super().__init__(list(StringIO(content, newline="")))
         self.source = _Source(content)
         self.count = 0
         self.needs_import = False
@@ -347,8 +348,8 @@ def _insert_import(content: str, name: str = "Path") -> str:
     :return str: Source with the import before executable statements and after headers.
     """
     tree = ast.parse(content)
-    lines = content.splitlines(keepends=True)
-    newline = "\r\n" if "\r\n" in content else "\n"
+    lines = list(StringIO(content, newline=""))
+    newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
     insertion = tree.body[0].lineno - 1 if tree.body else len(lines)
     for index, node in enumerate(tree.body):
         if (
@@ -386,10 +387,9 @@ def _insert_import(content: str, name: str = "Path") -> str:
                         while offset < len(content) and content[offset] in " \t":
                             offset += 1
                     else:
-                        line_end = content.find("\n", offset)
-                        offset = len(content) if line_end == -1 else line_end + 1
+                        offset = source.starts[header.end_lineno]
                 prefix = content[:offset].rstrip("; \t")
-                if prefix and not prefix.endswith("\n"):
+                if prefix and not prefix.endswith(("\r", "\n")):
                     prefix += newline
                 statement = "from pathlib import Path" + (f" as {name}" if name != "Path" else "")
                 return prefix + statement + newline + content[offset:]
@@ -398,7 +398,7 @@ def _insert_import(content: str, name: str = "Path") -> str:
     if name != "Path":
         statement += f" as {name}"
     prefix = "".join(lines[:insertion])
-    if prefix and not prefix.endswith("\n"):
+    if prefix and not prefix.endswith(("\r", "\n")):
         prefix += newline
     return prefix + statement + newline + "".join(lines[insertion:])
 
@@ -490,21 +490,23 @@ def _clean_imports(content: str) -> tuple[str, int]:
             )
         else:
             replacement = ""
-            line_end = content.find("\n", end)
-            line_end = len(content) if line_end == -1 else line_end
+            line_stop = source.starts[node.end_lineno]
+            line_end = line_stop
+            while line_end > end and content[line_end - 1] in "\r\n":
+                line_end -= 1
             following = content[end:line_end]
             if following.lstrip().startswith(";"):
                 end += len(following) - len(following.lstrip()) + 1
                 while end < len(content) and content[end] in " \t":
                     end += 1
             else:
-                line_start = content.rfind("\n", 0, start) + 1
+                line_start = source.starts[node.lineno - 1]
                 preceding = content[line_start:start]
                 if preceding.rstrip().endswith(";"):
                     start = line_start + len(preceding.rstrip()) - 1
                 elif content[line_start:start].strip() == "" and following.strip() == "":
                     start = line_start
-                    end = min(line_end + 1, len(content))
+                    end = line_stop
                 else:
                     # An empty suite still needs a statement.
                     replacement = "pass"
@@ -526,7 +528,7 @@ def fix_content(content: str) -> tuple[str, int]:
     :return tuple[str, int]: Updated source and the total call and import replacements.
     """
     tree = ast.parse(content)
-    detector = OSPathDetector(content.splitlines())
+    detector = OSPathDetector(list(StringIO(content, newline="")))
     detector.visit(tree)
     fixer = _PathFixer(content, tree)
     fixer.mutated_attributes.update(detector.mutated_attributes)
@@ -556,8 +558,8 @@ def fix_file(filepath: Path, dry_run: bool = False) -> int:
     if count:
         if dry_run:
             for line in difflib.unified_diff(
-                original.splitlines(keepends=True),
-                updated.splitlines(keepends=True),
+                list(StringIO(original, newline="")),
+                list(StringIO(updated, newline="")),
                 fromfile=str(filepath),
                 tofile=f"{filepath} (fixed)",
             ):

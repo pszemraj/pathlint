@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import sys
 from collections import defaultdict
+from io import StringIO
 from pathlib import Path
 
 
@@ -388,7 +389,7 @@ def _lint_file(filepath: Path) -> list[tuple[int, str]]:
     tree = ast.parse(content, filename=str(filepath))
     if "os" not in content and "path" not in content:
         return []
-    detector = OSPathDetector(content.splitlines())
+    detector = OSPathDetector(list(StringIO(content, newline="")))
     detector.visit(tree)
     return [(line, next(iter(sources))) for line, sources in sorted(detector.offenses.items())]
 

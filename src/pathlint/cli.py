@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -281,8 +282,8 @@ def _fix(
         label = display_path(filepath)
         if dry_run:
             for line in difflib.unified_diff(
-                original.splitlines(keepends=True),
-                updated.splitlines(keepends=True),
+                list(StringIO(original, newline="")),
+                list(StringIO(updated, newline="")),
                 fromfile=label,
                 tofile=f"{label} (fixed)",
             ):
