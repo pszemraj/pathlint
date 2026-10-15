@@ -65,28 +65,15 @@ class _Source:
             self.offset(node.end_lineno, node.end_col_offset),
         )
 
-    def render(self, start: int, end: int) -> str:
-        """Apply edits contained within an original source interval.
+    def render(self) -> str:
+        """Apply the recorded edits to the complete original source.
 
-        :param int start: Inclusive character offset in the original source.
-        :param int end: Exclusive character offset in the original source.
-        :return str: Source interval with its contained replacements applied.
+        :return str: Complete source with its replacements applied.
         """
         chunks: list[str] = []
-        cursor = start
+        cursor = 0
         for left, right, replacement in sorted(self.edits):
-            if start <= left and right <= end:
-                chunks.extend((self.content[cursor:left], replacement))
-                cursor = right
-        chunks.append(self.content[cursor:end])
+            chunks.extend((self.content[cursor:left], replacement))
+            cursor = right
+        chunks.append(self.content[cursor:])
         return "".join(chunks)
-
-    def replace(self, start: int, end: int, replacement: str) -> None:
-        """Record a replacement, superseding edits contained within its interval.
-
-        :param int start: Inclusive character offset in the original source.
-        :param int end: Exclusive character offset in the original source.
-        :param str replacement: Text to substitute for the interval.
-        """
-        self.edits = [edit for edit in self.edits if not (start <= edit[0] and edit[1] <= end)]
-        self.edits.append((start, end, replacement))

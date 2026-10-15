@@ -43,26 +43,6 @@ _NAMESPACE_ATTRIBUTES = _ATTRIBUTE_MUTATORS.union(*_NAMESPACE_IMPORTS.values()) 
 }
 
 
-def _skip_semicolon(
-    content: str, offset: int, following: str, *, whitespace: str | None = " \t"
-) -> int | None:
-    """Locate text after a following semicolon and its horizontal whitespace.
-
-    :param str content: Original source used to skip whitespace after the separator.
-    :param int offset: Start offset of the following text.
-    :param str following: Source interval in which to look for the separator.
-    :param str | None whitespace: Characters allowed before it, or all whitespace.
-    :return int | None: Offset after the separator, or None if it is absent.
-    """
-    stripped = following.lstrip(whitespace)
-    if not stripped.startswith(";"):
-        return None
-    offset += len(following) - len(stripped) + 1
-    while offset < len(content) and content[offset] in " \t":
-        offset += 1
-    return offset
-
-
 def _insert_import(content: str, name: str) -> str:
     """Insert a Path import after the module header while preserving newline style.
 
@@ -98,12 +78,14 @@ def _insert_import(content: str, name: str) -> str:
                     offset = source.starts[tree.body[0].lineno - 1]
                 else:
                     _, offset = source.span(header)
-                    after_separator = _skip_semicolon(content, offset, content[offset:])
-                    offset = (
-                        after_separator
-                        if after_separator is not None
-                        else source.starts[header.end_lineno]
-                    )
+                    while offset < len(content) and content[offset] in " \t":
+                        offset += 1
+                    if content[offset : offset + 1] == ";":
+                        offset += 1
+                        while offset < len(content) and content[offset] in " \t":
+                            offset += 1
+                    else:
+                        offset = source.starts[header.end_lineno]
                 prefix = content[:offset].rstrip("; \t")
                 if prefix and not prefix.endswith(("\r", "\n")):
                     prefix += newline
@@ -272,30 +254,8 @@ def _clean_imports(content: str) -> tuple[str, int]:
                 alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in remaining
             )
         else:
-            replacement = ""
-            line_stop = source.starts[node.end_lineno]
-            line_end = line_stop
-            while line_end > end and content[line_end - 1] in "\r\n":
-                line_end -= 1
-            following = content[end:line_end]
-            after_separator = _skip_semicolon(content, end, following, whitespace=None)
-            if after_separator is not None:
-                end = after_separator
-            else:
-                line_start = source.starts[node.lineno - 1]
-                preceding = content[line_start:start]
-                if preceding.rstrip().endswith(";"):
-                    start = line_start + len(preceding.rstrip()) - 1
-                elif content[line_start:start].strip() == "" and following.strip() == "":
-                    start = line_start
-                    end = line_stop
-                else:
-                    # An empty suite still needs a statement.
-                    replacement = "pass"
-            # Keep local suites valid and ordinary strings from becoming docstrings.
-            if node.col_offset and replacement == "":
-                replacement = "pass"
-                start, end = source.span(node)
-        source.replace(start, end, replacement)
+            # Public imports are retained above; local suites still need a statement.
+            replacement = "pass"
+        source.edits.append((start, end, replacement))
         count += node_count
-    return source.render(0, len(content)), count
+    return source.render(), count

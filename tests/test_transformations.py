@@ -1357,6 +1357,12 @@ def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> No
         "import sys; import os.path\nresult = os.path.isabs('missing')\n",
         "def check():\n    import os.path\n    return os.path.isabs('missing')\nresult = check()\n",
         "def check():\n    import os.path\nresult = check()\n",
+        "def check():\n    import os.path as first; import os.path as second\n"
+        "    return first.isabs('missing')\nresult = check()\n",
+        "def check(): import os.path as first; import os.path as second; "
+        "return first.isabs('missing')\nresult = check()\n",
+        "def check():\n    from os.path import (\n        basename,\n        dirname,\n    ); "
+        "import os.path as other\n    return False\nresult = check()\n",
         "import os.path as osp; result = osp.isabs('missing'); del osp\n",
         "from os.path import isabs as present\nresult = present('missing')\ndel present\n",
         "from os import path as paths\nresult = paths.isabs('missing')\ndel paths\n",

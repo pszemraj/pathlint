@@ -276,7 +276,7 @@ def fix_content(content: str, *, platform: str = sys.platform) -> tuple[str, int
     mutations.visit(tree)
     fixer = _PathFixer(content, tree, mutations, platform, nodes)
     fixer.visit(tree)
-    updated = fixer.source.render(0, len(content))
+    updated = fixer.source.render()
     updated, import_count = _clean_imports(updated)
     if fixer.needs_import:
         updated = _insert_import(updated, fixer.path_name)
