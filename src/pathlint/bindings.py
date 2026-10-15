@@ -60,10 +60,6 @@ class _ScopeNames(ast.NodeVisitor):
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self.names.add(node.id)
 
-    def visit_arg(self, node: ast.arg) -> None:
-        """Collect a function parameter as a local binding."""
-        self.names.add(node.arg)
-
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         """Collect binding names introduced by either import syntax."""
         names = {import_binding(node, alias)[0] for alias in node.names}
