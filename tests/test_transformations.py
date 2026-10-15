@@ -140,6 +140,10 @@ def test_windows_separator_spellings_stay_unchanged(method: str, args: tuple[str
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )
     assert fix_content(original, platform="win32") == (original, 0)
+    if sys.platform != "win32":
+        updated, count = fix_content(original)
+        assert count > 0
+        assert run(updated) == run(original)
 
 
 @pytest.mark.parametrize(

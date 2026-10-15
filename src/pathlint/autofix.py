@@ -22,6 +22,48 @@ REPLACEMENTS = {
 }
 
 
+def _literal_spelling_is_exact(function: str, values: list[str], platform: str) -> bool:
+    """Check literal path spellings for a supported call with valid arity.
+
+    :param str function: Supported os.path function name.
+    :param list[str] values: Nonempty string-literal arguments.
+    :param str platform: Target platform used for Windows normalization checks.
+    :return bool: Whether the known spelling differences permit a rewrite.
+    """
+    if function == "isabs":
+        # Older Windows os.path accepts roots without drives; pathlib does not.
+        return not values[0].startswith(("/", "\\"))
+    if REPLACEMENTS[function][1] and any(value.startswith("./") for value in values):
+        return False
+    # Backslashes are literal filename characters on POSIX; Windows normalization
+    # is relevant only for Windows targets.
+    if platform == "win32" and (
+        any(
+            ntpath.basename(value) != PureWindowsPath(value).name
+            if function == "basename"
+            else ntpath.dirname(value) != str(PureWindowsPath(value).parent)
+            if function == "dirname"
+            else value != str(PureWindowsPath(value))
+            for value in values
+        )
+        or (function == "join" and ntpath.join(*values) != str(PureWindowsPath(*values)))
+    ):
+        # Windows string results can retain spellings normalized by pathlib.
+        return False
+    if any(
+        value in {"", ".", ".."}
+        or value.endswith(("/", "\\", "/.", "/..", "\\.", "\\.."))
+        or "//" in value
+        or "/./" in value
+        for value in values
+    ):
+        return False
+    if function == "dirname" and "/" not in values[0]:
+        return False
+    # Home values can normalize differently; unknown users also raise in pathlib.
+    return not (function == "expanduser" and values[0].startswith("~"))
+
+
 class _PathFixer(OSPathDetector):
     """Resolve imported calls and collect conservative pathlib source edits."""
 
@@ -177,50 +219,13 @@ class _PathFixer(OSPathDetector):
             return
         values = [arg.value for arg in node.args]
         suffix, wraps_str = REPLACEMENTS[function]
-        if function == "isabs" and values[0].startswith(("/", "\\")):
-            # Older Windows os.path accepts roots without drives; pathlib does not.
+        if not _literal_spelling_is_exact(function, values, self.platform):
             return
         if wraps_str and (
             any("str" in scope for scope in self.scopes)
             or "str" in self.global_rebindings
             or ("generator" in self.scope_kinds and "str" in self.deferred_rebindings)
         ):
-            return
-        if wraps_str and any(value.startswith("./") for value in values):
-            return
-        if (
-            self.platform == "win32"
-            and function != "isabs"
-            and (
-                any(
-                    ntpath.basename(value) != PureWindowsPath(value).name
-                    if function == "basename"
-                    else ntpath.dirname(value) != str(PureWindowsPath(value).parent)
-                    if function == "dirname"
-                    else value != str(PureWindowsPath(value))
-                    for value in values
-                )
-                or (function == "join" and ntpath.join(*values) != str(PureWindowsPath(*values)))
-            )
-        ):
-            # String-returning calls can retain literal spellings normalized by pathlib.
-            return
-        # These literal spellings have different string results under pathlib.
-        if function != "isabs" and any(
-            (
-                value in {"", ".", ".."}
-                or value.endswith(("/", "\\", "/.", "/..", "\\.", "\\.."))
-                or "//" in value
-                or "/./" in value
-            )
-            for value in values
-        ):
-            return
-        if function == "dirname" and "/" not in values[0]:
-            return
-        if function == "expanduser" and values[0].startswith("~"):
-            # Home values can contain spelling that pathlib normalizes, and
-            # os.path leaves unknown users unchanged where Path.expanduser raises.
             return
         start, end = self.source.span(node)
         function_start, function_end = self.source.span(node.func)
