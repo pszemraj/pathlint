@@ -5,8 +5,6 @@ from __future__ import annotations
 import ast
 import ntpath
 import sys
-import tokenize
-from io import StringIO
 from pathlib import PureWindowsPath
 
 from pathlint._source import _Source, is_docstring
@@ -110,12 +108,11 @@ class _PathFixer(OSPathDetector):
 
         :return str: Source expression naming the pathlib Path constructor.
         """
-        for index in range(len(self.scopes) - 1, -1, -1):
+        indices = (len(self.scopes) - 1, 0) if len(self.scopes) > 1 else (0,)
+        for index in indices:
             scope = self.scopes[index]
             for name in scope:
-                if (index == 0 and name not in self.leading_aliases) or (
-                    index != 0 and index != len(self.scopes) - 1
-                ):
+                if index == 0 and name not in self.leading_aliases:
                     continue
                 origin = self.resolve_name(name)
                 if origin == "pathlib.Path":
@@ -131,13 +128,19 @@ class _PathFixer(OSPathDetector):
         :param ast.FormattedValue node: F-string field with an expression and optional format spec.
         """
         _, end = self.source.span(node.value)
-        tokens = tokenize.generate_tokens(
-            StringIO(self.source.content[end:], newline=None).readline
-        )
-        following = next(
-            token.string for token in tokens if token.type == tokenize.OP and token.string != ")"
-        )
-        if following == "=":
+        content = self.source.content
+        # Parsed expressions are followed only by grouping, trivia and the field
+        # separator. Inspect that gap without copying or tokenizing the file tail.
+        while end < len(content):
+            char = content[end]
+            if char == "#":
+                while end < len(content) and content[end] not in "\r\n":
+                    end += 1
+            elif char in ") \t\f\r\n\\":
+                end += 1
+            else:
+                break
+        if content[end : end + 1] == "=":
             self.debug_calls.update(
                 call for call in ast.walk(node.value) if isinstance(call, ast.Call)
             )

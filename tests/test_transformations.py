@@ -825,6 +825,8 @@ def test_strings_comments_and_fstring_text_survive() -> None:
         '''f"{p.basename('a/b')=}"''',
         '''f"{p.basename('a/b') = !r}"''',
         '''f"{(p.basename('a/b'))=}"''',
+        '''f"é{((p.basename('a/b')))\t = !s}"''',
+        '''f"""{(p.basename('a/b')\n) = }"""''',
         '''f"{p.basename(p.join('a', 'b'))=}"''',
         '''f"""{f"{p.basename('a/b')}"=}"""''',
     ],
@@ -839,11 +841,13 @@ def test_debug_fstring_labels_preserve_original_expressions(expression: str) -> 
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="F-string comments require Python 3.12")
-def test_debug_fstring_comment_before_equals_is_preserved() -> None:
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("gap", [" # keep comment\n)", " # } = !r are comment text\n)", " \\\n)"])
+def test_debug_fstring_comment_before_equals_is_preserved(newline: str, gap: str) -> None:
     """Recognize a debug marker after a multiline grouping and comment."""
     original = (
-        "import os.path as p\n" '''result = f"""{(p.basename('a/b') # keep comment\n)=}"""\n'''
-    )
+        "import os.path as p\n" + '''result = f"""{(p.basename('a/b')''' + gap + '''=}"""\n'''
+    ).replace("\n", newline)
     updated, count = fix_content(original)
     assert count == 0
     assert updated == original
@@ -857,6 +861,12 @@ def test_debug_fstring_comment_before_equals_is_preserved() -> None:
         '''f"{p.basename('a/b')!r}"''',
         '''f"{p.basename('a/b') == 'b'}"''',
         '''f"{p.basename('a/b')=:{len(p.basename('c/d'))}}"''',
+        pytest.param(
+            '''f"""{(p.basename('a/b') # } = ignored\n)}"""''',
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 12), reason="F-string comments require Python 3.12"
+            ),
+        ),
     ],
 )
 def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression: str) -> None:
