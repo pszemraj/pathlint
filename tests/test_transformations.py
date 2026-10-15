@@ -13,9 +13,9 @@ from typing import Optional, Union
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector, lint_file
+from pathlint.linter import lint_file
 from tests._forms import ALIAS_COPY_FORMS
-from tests.helpers import run
+from tests.helpers import offenses, run
 
 
 @pytest.mark.parametrize(
@@ -54,14 +54,12 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
     updated, count = fix_content(original)
     assert count > 0
     assert run(updated) == run(original)
-    detector = OSPathDetector()
-    detector.visit(ast.parse(updated))
     import_lines = {
         node.lineno
         for node in ast.walk(ast.parse(updated))
         if isinstance(node, (ast.Import, ast.ImportFrom))
     }
-    assert set(detector.offenses) <= import_lines
+    assert offenses(updated) <= import_lines
     assert fix_content(updated) == (updated, 0)
 
 
@@ -217,9 +215,7 @@ def test_filesystem_predicates_preserve_source_and_results(
         method == "exists" or (method == "isfile") == (kind == "file")
     )
     assert run(original) is expected
-    detector = OSPathDetector()
-    detector.visit(ast.parse(original))
-    assert detector.offenses
+    assert offenses(original)
 
 
 def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
@@ -344,9 +340,7 @@ def test_type_parameter_scopes_and_lazy_aliases_are_not_rewritten(body: str, exp
     updated, count = fix_content(original)
     assert (updated, count) == (original, 0)
     assert run(updated) == run(original) == expected
-    detector = OSPathDetector()
-    detector.visit(ast.parse(original))
-    assert detector.offenses
+    assert offenses(original)
 
 
 @pytest.mark.parametrize(

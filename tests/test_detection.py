@@ -15,15 +15,7 @@ import pytest
 from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector, lint_file
 from tests._forms import ALIAS_COPY_FORMS
-from tests.helpers import execute
-
-
-def offenses(source: str) -> set[int]:
-    """Return offending lines for a small source snippet."""
-    source = dedent(source).strip()
-    detector = OSPathDetector()
-    detector.visit(ast.parse(source))
-    return detector.offenses
+from tests.helpers import execute, offenses
 
 
 @pytest.mark.parametrize("scope", ["module", "function", "class"])
