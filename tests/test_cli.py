@@ -412,15 +412,15 @@ def test_option_like_exclusion_requires_equals_syntax() -> None:
     with pytest.raises(SystemExit) as result:
         cli.parse_args(["check", "--exclude", "--fix", "."])
     assert result.value.code == 2
-    args = cli.parse_args(["check", "--exclude=--fix", "."])
-    assert args.command == "check"
-    assert args.exclude == ["--fix"]
 
 
-@pytest.mark.parametrize("pattern", ["--fix", "--stats", "--aggressive"])
-def test_option_like_exclusion_is_preserved(pattern: str) -> None:
-    args = cli.parse_args(["fix", f"--exclude={pattern}", "."])
-    assert args.command == "fix"
+@pytest.mark.parametrize(
+    ("command", "pattern"),
+    [("check", "--fix"), ("fix", "--fix"), ("fix", "--stats"), ("fix", "--aggressive")],
+)
+def test_option_like_exclusion_is_preserved(command: str, pattern: str) -> None:
+    args = cli.parse_args([command, f"--exclude={pattern}", "."])
+    assert args.command == command
     assert args.exclude == [pattern]
 
 

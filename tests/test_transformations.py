@@ -15,7 +15,7 @@ import pytest
 from pathlint.autofix import fix_content
 from pathlint.linter import lint_file
 from tests._forms import ALIAS_COPY_FORMS
-from tests.helpers import offenses, run
+from tests.helpers import offenses, run, run_isolated
 
 
 @pytest.mark.parametrize(
@@ -98,92 +98,76 @@ def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("method", "args"),
+    ("method", "args", "supported"),
     [
-        ("join", ("a/b", "c")),
-        ("join", ("a", "b/c")),
-        ("join", (r"a\\b", "c")),
-        ("join", (r"a\.\b", "c")),
-        ("join", (r".\a", "b")),
-        ("join", ("C:.", "b")),
-        ("join", ("C:a", "C:")),
-        ("join", (r"C:\a", "C:")),
-        ("basename", ("C:.",)),
-        ("basename", ("c:.",)),
-        ("basename", ("Z:.",)),
-        ("dirname", ("a/b/c",)),
-        ("dirname", ("/file",)),
-        ("dirname", ("C:/file",)),
-        ("dirname", ("\\/file",)),
-        ("dirname", ("a/b\\c",)),
-        ("dirname", ("a\\\\b/c",)),
-        ("dirname", ("a\\.\\b/c",)),
-        ("dirname", ("C:./a",)),
-        ("dirname", (r"\./a",)),
-        ("expanduser", ("a/b",)),
-        ("expanduser", (r"a\\b",)),
-        ("expanduser", (r"a\.\b",)),
-        ("expanduser", (r".\a",)),
-        ("expanduser", ("C:.",)),
+        ("join", ("a/b", "c"), False),
+        ("join", ("a", "b/c"), False),
+        ("join", (r"a\\b", "c"), False),
+        ("join", (r"a\.\b", "c"), False),
+        ("join", (r".\a", "b"), False),
+        ("join", ("C:.", "b"), False),
+        ("join", ("C:a", "C:"), False),
+        ("join", (r"C:\a", "C:"), False),
+        ("basename", ("C:.",), False),
+        ("basename", ("c:.",), False),
+        ("basename", ("Z:.",), False),
+        ("dirname", ("a/b/c",), False),
+        ("dirname", ("/file",), False),
+        ("dirname", ("C:/file",), False),
+        ("dirname", ("\\/file",), False),
+        ("dirname", ("a/b\\c",), False),
+        ("dirname", ("a\\\\b/c",), False),
+        ("dirname", ("a\\.\\b/c",), False),
+        ("dirname", ("C:./a",), False),
+        ("dirname", (r"\./a",), False),
+        ("expanduser", ("a/b",), False),
+        ("expanduser", (r"a\\b",), False),
+        ("expanduser", (r"a\.\b",), False),
+        ("expanduser", (r".\a",), False),
+        ("expanduser", ("C:.",), False),
+        ("join", ("a", "b"), True),
+        ("join", (r"a\b", "c"), True),
+        ("join", ("C:", "b"), True),
+        ("join", ("C:a", "D:"), True),
+        ("join", ("C:a", "C:b"), True),
+        ("basename", ("C:",), True),
+        ("basename", ("C:file",), True),
+        ("basename", ("C:..",), True),
+        ("basename", ("C:/file",), True),
+        ("basename", (r"C:\file",), True),
+        ("basename", (r"a\\b",), True),
+        ("basename", (r"a\.\b",), True),
+        ("basename", ("a/b",), True),
+        ("dirname", ("a/b",), True),
+        ("dirname", ("a\\b/c",), True),
+        ("expanduser", ("a",), True),
+        ("expanduser", (r"a\b",), True),
+        ("expanduser", ("C:",), True),
     ],
 )
-def test_windows_separator_spellings_stay_unchanged(method: str, args: tuple[str, ...]) -> None:
-    """Keep literal spellings whose Windows string results pathlib normalizes."""
-    original_result = getattr(ntpath, method)(*args)
-    path = PureWindowsPath(*args)
-    replacement_result = (
-        path.name if method == "basename" else str(path.parent if method == "dirname" else path)
-    )
-    assert original_result != replacement_result
-    original = (
-        f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
-    )
-    assert fix_content(original, platform="win32") == (original, 0)
-    if sys.platform != "win32":
-        updated, count = fix_content(original)
-        assert count > 0
-        assert run(updated) == run(original)
-
-
-@pytest.mark.parametrize(
-    ("method", "args"),
-    [
-        ("join", ("a", "b")),
-        ("join", (r"a\b", "c")),
-        ("join", ("C:", "b")),
-        ("join", ("C:a", "D:")),
-        ("join", ("C:a", "C:b")),
-        ("basename", ("C:",)),
-        ("basename", ("C:file",)),
-        ("basename", ("C:..",)),
-        ("basename", ("C:/file",)),
-        ("basename", (r"C:\file",)),
-        ("basename", (r"a\\b",)),
-        ("basename", (r"a\.\b",)),
-        ("basename", ("a/b",)),
-        ("dirname", ("a/b",)),
-        ("dirname", ("a\\b/c",)),
-        ("expanduser", ("a",)),
-        ("expanduser", (r"a\b",)),
-        ("expanduser", ("C:",)),
-    ],
-)
-def test_windows_exact_separator_spellings_remain_supported(
-    method: str, args: tuple[str, ...]
+def test_windows_separator_spellings_preserve_exact_results(
+    method: str, args: tuple[str, ...], supported: bool
 ) -> None:
-    """Retain supported Windows literals when their string results are exact."""
+    """Rewrite Windows literals only when pathlib preserves their string results."""
     expected = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
     replacement_result = (
         path.name if method == "basename" else str(path.parent if method == "dirname" else path)
     )
-    assert expected == replacement_result
+    assert (expected == replacement_result) is supported
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )
     updated, count = fix_content(original, platform="win32")
-    assert count > 0
-    assert updated != original
+    if supported:
+        assert count > 0
+        assert updated != original
+    else:
+        assert (updated, count) == (original, 0)
+        if sys.platform != "win32":
+            updated, count = fix_content(original)
+            assert count > 0
+            assert run(updated) == run(original)
 
 
 @pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])
@@ -1521,9 +1505,7 @@ def test_import_cleanup_preserves_namespace_lookups(
     source = imports.format(namespace=namespace) + source
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
-    assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "b"
-    assert fix_content(updated) == (updated, 0)
 
 
 @pytest.mark.parametrize(
@@ -1586,7 +1568,6 @@ def test_import_cleanup_preserves_imports_with_object_vars(imports: str, accesso
     )
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
-    assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "file"
 
 
@@ -2660,15 +2641,7 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
         "    original_basename.__dict__ = original_dict\n"
     )
     for content in (source, updated):
-        result = subprocess.run(
-            [sys.executable, "-c", program, content],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == expected + "\n"
-        assert result.stderr == ""
+        assert run_isolated(content, program) == expected + "\n"
 
 
 @pytest.mark.parametrize(
@@ -2725,12 +2698,4 @@ def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
         "    else:\n        pathlib.PosixPath.name = original_posix_name\n"
     )
     for content in (source, updated):
-        result = subprocess.run(
-            [sys.executable, "-c", program, content],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == "file\n"
-        assert result.stderr == ""
+        assert run_isolated(content, program) == "file\n"
