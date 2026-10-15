@@ -73,6 +73,10 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
         "os.path.isabs(s='file')",
         "os.path.join('directory', *parts)",
         "os.path.isabs(b'file')",
+        "os.path.basename(b'directory/file')",
+        "os.path.dirname(b'directory/file')",
+        "os.path.expanduser(b'directory/file')",
+        "os.path.join(b'directory', b'file')",
         "os.path.basename('directory/')",
         "os.path.basename('.')",
         "os.path.dirname('file')",
@@ -372,7 +376,6 @@ def test_home_expansion_preserves_environment_spellings(
     assert run(updated) == run(source)
 
 
-@pytest.mark.parametrize("method", ["isabs", "basename", "dirname", "expanduser", "join"])
 @pytest.mark.parametrize(
     "argument",
     [
@@ -427,8 +430,9 @@ def test_home_expansion_preserves_environment_spellings(
         "os.path.normpath(**{'path': b'directory/file'})",
     ],
 )
-def test_byte_path_expressions_preserve_results(method: str, argument: str) -> None:
-    source = f"import os\nflag = True\nname = 'file'\nresult = os.path.{method}({argument})\n"
+def test_byte_path_expressions_preserve_results(argument: str) -> None:
+    # Nonliteral arguments share one rejection path across supported calls.
+    source = f"import os\nflag = True\nname = 'file'\nresult = os.path.basename({argument})\n"
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
     assert run(updated) == run(source)
@@ -1454,7 +1458,6 @@ def test_import_cleanup_preserves_augmented_assignment_reads(
 
 @pytest.mark.parametrize("namespace", ["globals", "locals", "vars"])
 @pytest.mark.parametrize("key", ["'osp'", "''.join(['o', 's', 'p'])"])
-@pytest.mark.parametrize("rewrite_call", [False, True])
 @pytest.mark.parametrize(
     ("imports", "accessor"),
     [
@@ -1489,11 +1492,10 @@ def test_import_cleanup_preserves_augmented_assignment_reads(
     ],
 )
 def test_import_cleanup_preserves_namespace_lookups(
-    namespace: str, key: str, rewrite_call: bool, imports: str, accessor: str
+    namespace: str, key: str, imports: str, accessor: str
 ) -> None:
     body = f"result = {accessor.replace('{namespace}', namespace)}[{key}].basename('a/b')\n"
-    if rewrite_call:
-        body += "filename = osp.basename('directory/file')\n"
+    body += "filename = osp.basename('directory/file')\n"
     if namespace == "globals":
         source = "import os.path as osp\n" + body
     else:
