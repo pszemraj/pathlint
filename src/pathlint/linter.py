@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 from pathlint._source import physical_lines
-from pathlint.bindings import _ScopeNames, declaration_name, import_binding
+from pathlint.bindings import _ScopeNames, all_arguments, declaration_name, import_binding
 from pathlint.mutations import MutationCollector
 
 
@@ -54,17 +54,7 @@ class OSPathDetector(MutationCollector):
                 self._visit_comprehension_body(function)
                 continue
             names = _ScopeNames()
-            names.names.update(
-                argument.arg
-                for argument in (
-                    *function.args.posonlyargs,
-                    *function.args.args,
-                    *function.args.kwonlyargs,
-                    function.args.vararg,
-                    function.args.kwarg,
-                )
-                if argument
-            )
+            names.names.update(argument.arg for argument in all_arguments(function.args))
             body = [function.body] if isinstance(function, ast.Lambda) else function.body
             for statement in body:
                 names.visit(statement)
@@ -326,14 +316,8 @@ class OSPathDetector(MutationCollector):
         for default in (*node.defaults, *node.kw_defaults):
             if default:
                 self.visit(default)
-        for argument in (
-            *node.posonlyargs,
-            *node.args,
-            node.vararg,
-            *node.kwonlyargs,
-            node.kwarg,
-        ):
-            if argument and argument.annotation:
+        for argument in all_arguments(node):
+            if argument.annotation:
                 self.visit(argument.annotation)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
@@ -513,6 +497,7 @@ def lint_file(filepath: Path) -> list[tuple[int, str]]:
     :return list[tuple[int, str]]: One (line, stripped source) per offending line, sorted.
     """
     content = filepath.read_text(encoding="utf-8")
+    # Report syntax errors even when the substring fast path would skip detection.
     tree = ast.parse(content, filename=str(filepath))
     if "os" not in content or "path" not in content:
         return []

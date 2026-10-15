@@ -5,6 +5,19 @@ from __future__ import annotations
 import ast
 
 
+def all_arguments(node: ast.arguments) -> tuple[ast.arg, ...]:
+    """Return function parameters in annotation evaluation order.
+
+    :param ast.arguments node: Positional, variadic, and keyword parameters.
+    :return tuple[ast.arg, ...]: Parameters, excluding absent variadic slots.
+    """
+    return tuple(
+        argument
+        for argument in (*node.posonlyargs, *node.args, node.vararg, *node.kwonlyargs, node.kwarg)
+        if argument is not None
+    )
+
+
 def import_binding(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> tuple[str, str | None]:
     """Return the local binding and absolute origin introduced by an import alias.
 
@@ -73,14 +86,8 @@ class _ScopeNames(ast.NodeVisitor):
         ):
             if expression:
                 self.visit(expression)
-        for argument in (
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-            node.args.vararg,
-            node.args.kwarg,
-        ):
-            if argument and argument.annotation:
+        for argument in all_arguments(node.args):
+            if argument.annotation:
                 self.visit(argument.annotation)
 
     visit_AsyncFunctionDef = visit_FunctionDef

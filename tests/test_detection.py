@@ -810,6 +810,27 @@ def test_function_defaults_bind_before_annotations(definition: str, parameter: s
         assert execute(content)["result"] == "custom"
 
 
+@pytest.mark.parametrize("definition", ["def", "async def"])
+def test_vararg_annotation_binds_before_keyword_only_annotations(definition: str) -> None:
+    source = (
+        "import os\n"
+        "from types import SimpleNamespace\n"
+        "custom = SimpleNamespace(path=SimpleNamespace(isabs=lambda value: 'custom'))\n"
+        f"{definition} f(\n"
+        "    pos: os.path.isabs('file'), /, arg: os.path.isabs('file'),\n"
+        "    *args: (os := custom), key: os.path.isabs('file'),\n"
+        "    **kwargs: os.path.isabs('file'),\n"
+        ") -> os.path.isabs('file'):\n    pass\n"
+        "result = f.__annotations__\n"
+    )
+    assert offenses(source) == {5}
+    assert fix_content(source) == (source, 0)
+    annotations = execute(source)["result"]
+    assert annotations["pos"] is False
+    assert annotations["arg"] is False
+    assert annotations["key"] == annotations["kwargs"] == annotations["return"] == "custom"
+
+
 @pytest.mark.parametrize("parameter", ["arg=(os := os)", "arg: (os := os) = None"])
 def test_definition_walrus_does_not_become_function_local(parameter: str) -> None:
     source = (
