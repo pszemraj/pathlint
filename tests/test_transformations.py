@@ -14,6 +14,7 @@ import pytest
 
 from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector, lint_file
+from tests._forms import ALIAS_COPY_FORMS
 from tests.helpers import run
 
 
@@ -2542,16 +2543,7 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
                 False,
             )
             for copy in (
-                "alias = osp",
-                "alias = second = osp\nalias = second",
-                "alias = [osp][0]",
-                "aliases = [osp]\nalias = aliases[0]",
-                "aliases = []\naliases += [osp]\nalias = aliases[0]",
-                "aliases = {}\naliases |= {'path': osp}\nalias = aliases['path']",
-                "alias = [osp for _ in [0]][0]",
-                "alias = {'path': osp for _ in [0]}['path']",
-                "alias = ([osp] + [None])[0]",
-                "def identity(value):\n    return value\nalias = identity(osp)",
+                *(form.replace("original", "osp") for form in ALIAS_COPY_FORMS),
                 "from contextlib import nullcontext\nwith nullcontext(osp) as alias:\n    pass",
                 "def copied():\n    return osp\nalias = copied()",
                 "factory = lambda: osp\nalias = factory()",
@@ -2563,21 +2555,9 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
                     if sys.version_info >= (3, 10)
                     else []
                 ),
-                "alias = {'path': osp}['path']",
-                "alias, = (*[osp],)",
-                "*aliases, = (osp,)\nalias = aliases[0]",
                 "alias, second = (osp, 1) if True else (None, 2)",
-                "alias, second = (osp, 1) or (None, 2)",
-                "aliases = (osp,)\nalias, = aliases",
-                "for alias in (osp,):\n    pass",
-                "for alias in {osp: None}:\n    pass",
-                "alias, = {osp: None}",
                 "box = SimpleNamespace()\nbox.module = osp\nalias = box.module",
                 "box = {}\nbox['module'] = osp\nalias = box['module']",
-                "alias: object = osp",
-                "(alias := osp)",
-                "alias, (second,) = osp, (osp,)",
-                "alias, *unused = (osp,)",
                 "flag = True\nalias = osp if flag else object()",
                 "alias = osp or object()",
             )
@@ -2652,7 +2632,10 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
     ],
 )
 def test_mutated_path_attributes_preserve_results(body: str, expected: str, changes: bool) -> None:
-    source = "import os.path as osp\nfrom types import SimpleNamespace\n" + body
+    source = (
+        "import os.path as osp\nfrom types import SimpleNamespace\nflag = True\nother = object()\n"
+        + body
+    )
     updated, count = fix_content(source)
     assert bool(count) is changes
     # Isolate module mutations and restore before subprocess coverage shuts down.

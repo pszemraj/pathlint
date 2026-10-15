@@ -14,6 +14,7 @@ import pytest
 
 from pathlint.autofix import fix_content
 from pathlint.linter import OSPathDetector, lint_file
+from tests._forms import ALIAS_COPY_FORMS
 from tests.helpers import execute
 
 
@@ -1251,33 +1252,9 @@ def test_deferred_method_mutations_are_collected() -> None:
 @pytest.mark.parametrize(
     "copy",
     [
-        "alias = original",
-        "alias = second = original\nalias = second",
-        "alias = [original][0]",
-        "aliases = [original]\nalias = aliases[0]",
-        "aliases = []\naliases += [original]\nalias = aliases[0]",
-        "aliases = {}\naliases |= {'path': original}\nalias = aliases['path']",
-        "alias = [original for _ in [0]][0]",
-        "alias = {'path': original for _ in [0]}['path']",
-        "alias = ([original] + [None])[0]",
-        "def identity(value):\n    return value\nalias = identity(original)",
-        "alias = {'path': original}['path']",
-        "alias, = (*[original],)",
-        "*aliases, = (original,)\nalias = aliases[0]",
-        "alias, second = (original, 1) if flag else (None, 2)",
-        "alias, second = (original, 1) or (None, 2)",
-        "aliases = (original,)\nalias, = aliases",
-        "for alias in (original,):\n    pass",
-        "for alias in {original: None}:\n    pass",
-        "alias, = {original: None}",
+        *ALIAS_COPY_FORMS,
         "def writer(alias=original):\n    pass",
         "def writer(*, alias=original):\n    pass",
-        "alias: object = original",
-        "(alias := original)",
-        "alias, (second,) = original, (original,)",
-        "alias, *unused = (original,)",
-        "alias = original if flag else other",
-        "alias = original or other",
     ],
 )
 @pytest.mark.parametrize(
@@ -1292,7 +1269,7 @@ def test_copied_alias_mutations_do_not_establish_read_bindings(
     copy: str, original: str, mutation: str, changed: str
 ) -> None:
     source = (
-        "import os.path as osp\nimport pathlib as paths\n"
+        "import os.path as osp\nimport pathlib as paths\nflag = True\nother = object()\n"
         + copy.replace("original", original)
         + "\n"
         + mutation
