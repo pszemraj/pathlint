@@ -94,7 +94,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             subparser.add_argument("--no-color", action="store_true", help="Disable colored diffs")
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] in command_parsers:
-        args = command_parsers[arguments[0]].parse_intermixed_args(arguments[1:])
+        command_arguments = arguments[1:]
+        if "--" in command_arguments:
+            sentinel = command_arguments.index("--")
+            # Python <3.12 can drop the sentinel before reparsing positionals.
+            # Relative prefixes keep names starting with '-' positional in both passes.
+            command_arguments[sentinel + 1 :] = [
+                f"./{argument}" if argument.startswith("-") else argument
+                for argument in command_arguments[sentinel + 1 :]
+            ]
+        args = command_parsers[arguments[0]].parse_intermixed_args(command_arguments)
         args.command = arguments[0]
     else:
         args = parser.parse_args(arguments)

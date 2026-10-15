@@ -363,15 +363,49 @@ def test_fix_parse_error_retains_original(
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("prefix", [["check"], ["check", "prefix.py", "-q"]])
+@pytest.mark.parametrize(
+    ("prefix", "status", "expected"),
+    [
+        (["check"], 1, "--dry-run.py:2: PL001"),
+        (["check", "prefix.py", "-q"], 1, "--dry-run.py:2: PL001"),
+        (["fix", "--dry-run"], 1, "+++ --dry-run.py (fixed)"),
+        (["fix", "prefix.py", "--dry-run", "-q"], 1, "+++ --dry-run.py (fixed)"),
+        (["files"], 0, "--dry-run.py\n"),
+        (["files", "prefix.py", "--no-gitignore"], 0, "--dry-run.py\n"),
+    ],
+)
 def test_flags_after_sentinel_are_filenames(
-    workspace: Path, capsys: pytest.CaptureFixture[str], prefix: list[str]
+    workspace: Path,
+    capsys: pytest.CaptureFixture[str],
+    prefix: list[str],
+    status: int,
+    expected: str,
 ) -> None:
     write_file(workspace, "prefix.py", "print('clean')\n")
     write_file(workspace, "--fix", "not Python")
-    write_file(workspace, "--dry-run.py")
-    assert cli.main([*prefix, "--", "--fix", "--dry-run.py"]) == 1
-    assert "--dry-run.py:2: PL001" in capsys.readouterr().out
+    target = write_file(workspace, "--dry-run.py")
+    original = target.read_bytes()
+    assert cli.main([*prefix, "--", "--fix", "--dry-run.py"]) == status
+    output = capsys.readouterr()
+    assert expected in output.out
+    assert output.err == ""
+    assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["check", "fix", "files"])
+@pytest.mark.parametrize(
+    "paths",
+    [[], ["--dry-run.py"], ["--", "--help", "--version", "--exclude", "-q", "-", "plain.py"]],
+)
+def test_leading_sentinel_preserves_paths_and_caller_arguments(
+    command: str, paths: list[str]
+) -> None:
+    argv = [command, "--", *paths]
+    original = argv.copy()
+    args = cli.parse_args(argv)
+    expected = [Path(path) for path in paths] or [Path(".")]
+    assert args.paths == expected
+    assert argv == original
 
 
 def test_option_like_exclusion_requires_equals_syntax() -> None:
