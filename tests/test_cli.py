@@ -1,14 +1,14 @@
-"""Exercise command behavior, reporting, compatibility, and stream contracts."""
+"""Exercise command behavior, reporting, and stream contracts."""
 
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
 import json
-import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
@@ -18,6 +18,7 @@ import pathlint
 from pathlint import cli
 
 OFFENDING = "import os\nvalue = os.path.isabs('example')\n"
+Invoke = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def test_main_module_import_does_not_run_cli(
@@ -47,33 +48,8 @@ def write_file(root: Path, name: str, content: str = OFFENDING) -> Path:
     return path
 
 
-def invoke(root: Path, *args: str, encoding: str | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the module in a subprocess, optionally forcing its output encoding.
-
-    :param Path root: Working directory for the command.
-    :param str args: Command-line arguments without the executable name.
-    :param str | None encoding: Stream encoding to force with UTF-8 mode disabled.
-    :return subprocess.CompletedProcess[str]: Captured output and process status.
-    """
-    env = dict(os.environ, PYTHONPATH=str(Path(cli.__file__).parents[1]))
-    if encoding is not None:
-        env.update(PYTHONUTF8="0", PYTHONIOENCODING=f"{encoding}:strict")
-    if "COV_CORE_SOURCE" in env:
-        # These subprocesses change cwd; retain the parent's branch-coverage settings.
-        env["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
-    return subprocess.run(
-        [sys.executable, "-m", "pathlint", *args],
-        cwd=root,
-        env=env,
-        text=True,
-        encoding=encoding,
-        capture_output=True,
-        check=False,
-    )
-
-
-@pytest.mark.parametrize("args", [[], ["check"], ["."], ["check", "."]])
-def test_default_and_legacy_checks(
+@pytest.mark.parametrize("args", [["check"], ["check", "."]])
+def test_check_defaults_to_current_directory(
     workspace: Path, capsys: pytest.CaptureFixture[str], args: list[str]
 ) -> None:
     write_file(workspace, "sample.py")
@@ -82,9 +58,21 @@ def test_default_and_legacy_checks(
     assert output.out == (
         "sample.py:2: PL001 os.path usage: value = os.path.isabs('example')\n"
         "Found 1 violation in 1 of 1 files checked.\n"
+        "The experimental fixer supports some calls; other usages need manual migration.\n"
     )
     assert output.err == ""
     assert f"{chr(27)}[" not in output.out
+
+
+@pytest.mark.parametrize("args", [[], ["."], ["--fix", "."], ["--dry-run", "."]])
+def test_explicit_subcommand_is_required(workspace: Path, args: list[str], invoke: Invoke) -> None:
+    path = write_file(workspace, "sample.py")
+    original = path.read_bytes()
+    result = invoke(workspace, *args)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "usage: pathlint" in result.stderr
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -126,13 +114,10 @@ def test_files_lists_only_deduplicated_selection(
         (["check", "one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
         (["fix", "one.py", "--dry-run", "two.py", "--quiet"], 1),
         (["files", "one.py", "--exclude", "vendor", "two.py"], 0),
-        (["one.py", "--exclude", "vendor", "two.py", "--quiet"], 1),
-        (["one.py", "--dry-run", "two.py", "--quiet"], 1),
-        (["--stats", "one.py", "--dry-run", "two.py", "--aggressive"], 1),
     ],
 )
 def test_paths_can_follow_interspersed_options(
-    workspace: Path, args: list[str], expected_status: int
+    workspace: Path, args: list[str], expected_status: int, invoke: Invoke
 ) -> None:
     paths = [write_file(workspace, name) for name in ("one.py", "two.py")]
     originals = [path.read_bytes() for path in paths]
@@ -158,7 +143,7 @@ def test_missing_input_does_not_hide_valid_inputs(
     assert "Traceback" not in output.err
 
 
-def test_json_reports_findings_syntax_and_missing_inputs(workspace: Path) -> None:
+def test_json_reports_findings_syntax_and_missing_inputs(workspace: Path, invoke: Invoke) -> None:
     write_file(workspace, "sample.py")
     write_file(workspace, "broken.py", "if True\n    pass\n")
     result = invoke(workspace, "check", ".", "missing.py", "--output-format", "json", "--stats")
@@ -198,7 +183,7 @@ def test_json_clean_and_decode_error(workspace: Path, capsys: pytest.CaptureFixt
 
 
 @pytest.mark.parametrize("flag", ["--quiet", "--aggressive"])
-def test_json_rejects_text_only_flags(workspace: Path, flag: str) -> None:
+def test_json_rejects_text_only_flags(workspace: Path, flag: str, invoke: Invoke) -> None:
     result = invoke(workspace, "check", "--output-format", "json", flag)
     assert result.returncode == 2
     assert result.stdout == ""
@@ -206,10 +191,20 @@ def test_json_rejects_text_only_flags(workspace: Path, flag: str) -> None:
 
 
 @pytest.mark.parametrize("command", ["fix", "files"])
-def test_json_is_check_only(workspace: Path, command: str) -> None:
+def test_json_is_check_only(workspace: Path, command: str, invoke: Invoke) -> None:
     result = invoke(workspace, command, "--output-format", "json")
     assert result.returncode == 2
     assert "unrecognized arguments" in result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--stats", "--aggressive"])
+def test_fix_rejects_check_only_options(workspace: Path, flag: str, invoke: Invoke) -> None:
+    path = write_file(workspace, "sample.py")
+    original = path.read_bytes()
+    result = invoke(workspace, "fix", flag)
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+    assert path.read_bytes() == original
 
 
 def test_statistics_are_sorted_capped_and_use_single_read(
@@ -217,14 +212,14 @@ def test_statistics_are_sorted_capped_and_use_single_read(
 ) -> None:
     for index in range(7):
         write_file(workspace, f"{index}.py", "import os\n" + "os.path.exists('x')\n" * (index + 1))
-    original = cli._lint_file
+    original = cli.lint_file
     reads: list[Path] = []
 
     def track_read(path: Path) -> list[tuple[int, str]]:
         reads.append(path)
         return original(path)
 
-    monkeypatch.setattr(cli, "_lint_file", track_read)
+    monkeypatch.setattr(cli, "lint_file", track_read)
     assert cli.main(["check", "--stats", "--output-format", "json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert [entry["path"] for entry in report["statistics"]] == [
@@ -238,20 +233,12 @@ def test_statistics_are_sorted_capped_and_use_single_read(
     assert len(set(reads)) == 7
 
 
-@pytest.mark.parametrize(
-    "legacy_flags", [None, [], ["--stats"], ["--aggressive"], ["--stats", "--aggressive"]]
-)
 def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
-    workspace: Path, capsys: pytest.CaptureFixture[str], legacy_flags: list[str] | None
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = write_file(workspace, "sample.py")
     original = path.read_bytes()
-    args = (
-        [*legacy_flags, "--dry-run", "sample.py"]
-        if legacy_flags is not None
-        else ["fix", "sample.py", "--dry-run"]
-    )
-    assert cli.main([*args, "--quiet"]) == 1
+    assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 1
     output = capsys.readouterr()
     assert output.out == (
         "--- sample.py\n"
@@ -267,10 +254,7 @@ def test_fix_dry_run_is_immutable_then_fix_is_idempotent(
     assert f"{chr(27)}[" not in output.out
     assert output.err == ""
     assert path.read_bytes() == original
-    args = (
-        ["--fix", "sample.py", *legacy_flags] if legacy_flags is not None else ["fix", "sample.py"]
-    )
-    assert cli.main([*args, "--quiet"]) == 0
+    assert cli.main(["fix", "sample.py", "--quiet"]) == 0
     assert "_Path('example').is_absolute()" in path.read_text(encoding="utf-8")
     assert capsys.readouterr() == ("", "")
     assert cli.main(["fix", "sample.py", "--dry-run", "--quiet"]) == 0
@@ -297,6 +281,12 @@ def test_predicate_findings_are_not_autofixed(
     for args in (["fix", "--dry-run", "--quiet"], ["fix", "--quiet"]):
         assert cli.main(args) == 0
         assert capsys.readouterr() == ("", "")
+        assert path.read_bytes() == original
+    for args in (["fix", "--dry-run"], ["fix"]):
+        assert cli.main(args) == 0
+        output = capsys.readouterr()
+        assert "manual migration" in output.out
+        assert output.err == ""
         assert path.read_bytes() == original
     assert cli.main(["check", "--quiet"]) == 1
     assert "PL001" in capsys.readouterr().out
@@ -373,35 +363,69 @@ def test_fix_parse_error_retains_original(
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("prefix", [[], ["prefix.py"], ["check", "prefix.py", "-q"]])
-def test_legacy_flags_after_sentinel_are_filenames(
-    workspace: Path, capsys: pytest.CaptureFixture[str], prefix: list[str]
+@pytest.mark.parametrize(
+    ("prefix", "status", "expected"),
+    [
+        (["check"], 1, "--dry-run.py:2: PL001"),
+        (["check", "prefix.py", "-q"], 1, "--dry-run.py:2: PL001"),
+        (["fix", "--dry-run"], 1, "+++ --dry-run.py (fixed)"),
+        (["fix", "prefix.py", "--dry-run", "-q"], 1, "+++ --dry-run.py (fixed)"),
+        (["files"], 0, "--dry-run.py\n"),
+        (["files", "prefix.py", "--no-gitignore"], 0, "--dry-run.py\n"),
+    ],
+)
+def test_flags_after_sentinel_are_filenames(
+    workspace: Path,
+    capsys: pytest.CaptureFixture[str],
+    prefix: list[str],
+    status: int,
+    expected: str,
 ) -> None:
     write_file(workspace, "prefix.py", "print('clean')\n")
     write_file(workspace, "--fix", "not Python")
-    write_file(workspace, "--dry-run.py")
-    assert cli.main([*prefix, "--", "--fix", "--dry-run.py"]) == 1
-    assert "--dry-run.py:2: PL001" in capsys.readouterr().out
+    target = write_file(workspace, "--dry-run.py")
+    original = target.read_bytes()
+    assert cli.main([*prefix, "--", "--fix", "--dry-run.py"]) == status
+    output = capsys.readouterr()
+    assert expected in output.out
+    assert output.err == ""
+    assert target.read_bytes() == original
 
 
-def test_exclude_option_value_does_not_activate_legacy_fix(workspace: Path) -> None:
+@pytest.mark.parametrize("command", ["check", "fix", "files"])
+@pytest.mark.parametrize(
+    "paths",
+    [[], ["--dry-run.py"], ["--", "--help", "--version", "--exclude", "-q", "-", "plain.py"]],
+)
+def test_leading_sentinel_preserves_paths_and_caller_arguments(
+    command: str, paths: list[str]
+) -> None:
+    argv = [command, "--", *paths]
+    original = argv.copy()
+    args = cli.parse_args(argv)
+    expected = [Path(path) for path in paths] or [Path(".")]
+    assert args.paths == expected
+    assert argv == original
+
+
+def test_option_like_exclusion_requires_equals_syntax() -> None:
     with pytest.raises(SystemExit) as result:
-        cli.parse_args(["--exclude", "--fix", "."])
+        cli.parse_args(["check", "--exclude", "--fix", "."])
     assert result.value.code == 2
-    args = cli.parse_args(["--exclude=--fix", "."])
-    assert args.command == "check"
-    assert args.exclude == ["--fix"]
 
 
-@pytest.mark.parametrize("pattern", ["--fix", "--stats", "--aggressive"])
-def test_legacy_flags_are_not_removed_from_option_value(pattern: str) -> None:
-    args = cli.parse_args(["--fix", f"--exclude={pattern}", "."])
-    assert args.command == "fix"
+@pytest.mark.parametrize(
+    ("command", "pattern"),
+    [("check", "--fix"), ("fix", "--fix"), ("fix", "--stats"), ("fix", "--aggressive")],
+)
+def test_option_like_exclusion_is_preserved(command: str, pattern: str) -> None:
+    args = cli.parse_args([command, f"--exclude={pattern}", "."])
+    assert args.command == command
     assert args.exclude == [pattern]
 
 
 @pytest.mark.parametrize("command", [None, "check", "fix", "files"])
-def test_help_lists_shared_options(workspace: Path, command: str | None) -> None:
+def test_help_lists_shared_options(workspace: Path, command: str | None, invoke: Invoke) -> None:
     args = [command, "--help"] if command else ["--help"]
     result = invoke(workspace, *args)
     assert result.returncode == 0
@@ -415,27 +439,14 @@ def test_help_lists_shared_options(workspace: Path, command: str | None) -> None
     assert "PosixPath" not in result.stdout
 
 
-def test_version_uses_distribution_metadata(
+def test_version_uses_package_version(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "version", lambda name: "9.8.7" if name == "pathlint" else "wrong")
+    monkeypatch.setattr(cli, "__version__", "9.8.7")
     with pytest.raises(SystemExit) as result:
         cli.main(["--version"])
     assert result.value.code == 0
     assert capsys.readouterr().out.endswith(" 9.8.7\n")
-
-
-def test_uninstalled_source_version_is_helpful(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def unavailable(name: str) -> str:
-        raise PackageNotFoundError(name)
-
-    monkeypatch.setattr(cli, "version", unavailable)
-    with pytest.raises(SystemExit) as result:
-        cli.main(["--version"])
-    assert result.value.code == 0
-    assert "unknown (not installed)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("installed", [True, False])
@@ -459,20 +470,7 @@ def test_package_version_uses_metadata_or_unknown(
         importlib.reload(pathlint)
 
 
-def test_package_version_does_not_need_generated_version_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    try:
-        with monkeypatch.context() as patch:
-            patch.setattr(importlib.metadata, "version", lambda name: "9.8.7")
-            patch.setitem(sys.modules, "pathlint._version", None)
-            importlib.reload(pathlint)
-            assert pathlint.__version__ == "9.8.7"
-    finally:
-        importlib.reload(pathlint)
-
-
-def test_cli_and_package_report_same_version(workspace: Path) -> None:
+def test_cli_and_package_report_same_version(workspace: Path, invoke: Invoke) -> None:
     from pathlint import __version__
 
     result = invoke(workspace, "--version")
@@ -502,19 +500,14 @@ def test_interrupt_returns_conventional_status(monkeypatch: pytest.MonkeyPatch) 
     ],
 )
 def test_closed_stdout_pipe_returns_one_without_shutdown_error(
-    workspace: Path, args: list[str]
+    workspace: Path, args: list[str], source_env: dict[str, str]
 ) -> None:
     path = write_file(workspace, "sample.py")
     original = path.read_bytes()
-    env = dict(
-        os.environ,
-        PYTHONPATH=str(Path(cli.__file__).parents[1]),
-        COV_CORE_CONFIG=str(Path(__file__).resolve().parents[1] / "pyproject.toml"),
-    )
     with subprocess.Popen(
         [sys.executable, "-m", "pathlint", *args],
         cwd=workspace,
-        env=env,
+        env=source_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as process:
@@ -526,7 +519,7 @@ def test_closed_stdout_pipe_returns_one_without_shutdown_error(
     assert path.read_bytes() == original
 
 
-def test_module_commands_follow_exit_and_stream_contract(workspace: Path) -> None:
+def test_module_commands_follow_exit_and_stream_contract(workspace: Path, invoke: Invoke) -> None:
     path = write_file(workspace, "sample.py")
     listing = invoke(workspace, "files")
     assert listing.returncode == 0
@@ -574,7 +567,7 @@ def test_fix_crlf_preview_has_clean_lines_and_preserves_file_newlines(
 
 @pytest.mark.parametrize("suffix, markers", [("", 2), ("\n", 0), ("\n# tail", 1)])
 def test_preview_preserves_final_newline_information(
-    workspace: Path, suffix: str, markers: int
+    workspace: Path, suffix: str, markers: int, invoke: Invoke
 ) -> None:
     if shutil.which("git") is None:
         pytest.skip("Git is required to apply preview patches")
@@ -604,7 +597,9 @@ def test_preview_preserves_final_newline_information(
 
 
 @pytest.mark.parametrize("clean", [False, True])
-def test_cp1252_preserves_clean_and_aggressive_status(workspace: Path, clean: bool) -> None:
+def test_cp1252_preserves_clean_and_aggressive_status(
+    workspace: Path, clean: bool, invoke: Invoke
+) -> None:
     write_file(workspace, "sample.py", "print('clean')\n" if clean else OFFENDING)
     result = invoke(workspace, "check", "sample.py", "--aggressive", encoding="cp1252")
     assert result.returncode == (0 if clean else 1)
@@ -619,7 +614,7 @@ def test_cp1252_preserves_clean_and_aggressive_status(workspace: Path, clean: bo
 
 @pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
 def test_output_encoding_preserves_unicode_data_and_command_status(
-    workspace: Path, encoding: str
+    workspace: Path, encoding: str, invoke: Invoke
 ) -> None:
     name = "café_🐍.py"
     source = "import os\nvalue = os.path.isabs('café/🐍')\n"
@@ -664,7 +659,9 @@ def test_output_encoding_preserves_unicode_data_and_command_status(
 
 
 @pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
-def test_unicode_missing_input_keeps_error_status(workspace: Path, encoding: str) -> None:
+def test_unicode_missing_input_keeps_error_status(
+    workspace: Path, encoding: str, invoke: Invoke
+) -> None:
     name = "missing_🐍.py"
     result = invoke(workspace, "check", name, encoding=encoding)
     assert result.returncode == 2

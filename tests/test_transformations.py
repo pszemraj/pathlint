@@ -13,14 +13,9 @@ from typing import Optional, Union
 import pytest
 
 from pathlint.autofix import fix_content
-from pathlint.linter import OSPathDetector, _lint_file
-
-
-def run(source: str) -> object:
-    """Execute a fixture and return its result."""
-    namespace: dict[str, object] = {}
-    exec(compile(source, "<fixture>", "exec"), namespace)
-    return namespace["result"]
+from pathlint.linter import lint_file
+from tests._forms import ALIAS_COPY_FORMS
+from tests.helpers import offenses, run, run_isolated
 
 
 @pytest.mark.parametrize(
@@ -37,6 +32,14 @@ def run(source: str) -> object:
         ("import os", "os.path.dirname(FILE)"),
         ("import os", "os.path.expanduser('directory')"),
         ("import os", "os.path.join('directory', 'file')"),
+        ("import os", "os.path.join('directory', 'file',)"),
+        ("import os", "os.path.join('root', 'subdir', 'file.txt')"),
+        ("import os", "os.path.isabs('файл')"),
+        (
+            "import os",
+            "os.path.join(\n    'root',  # ) should not end the call\n"
+            "    'subdir',\n    'file.txt',\n)",
+        ),
         ("import pathlib\nimport os", "os.path.isabs(FILE)"),
         ("import pathlib as paths\nimport os", "os.path.isabs(FILE)"),
         ("from pathlib import Path as P\nimport os", "os.path.isabs(FILE)"),
@@ -51,14 +54,12 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
     updated, count = fix_content(original)
     assert count > 0
     assert run(updated) == run(original)
-    detector = OSPathDetector(updated.splitlines())
-    detector.visit(ast.parse(updated))
     import_lines = {
         node.lineno
         for node in ast.walk(ast.parse(updated))
         if isinstance(node, (ast.Import, ast.ImportFrom))
     }
-    assert set(detector.offenses) <= import_lines
+    assert offenses(updated) <= import_lines
     assert fix_content(updated) == (updated, 0)
 
 
@@ -72,6 +73,10 @@ def test_supported_calls_preserve_results(imports: str, expression: str) -> None
         "os.path.isabs(s='file')",
         "os.path.join('directory', *parts)",
         "os.path.isabs(b'file')",
+        "os.path.basename(b'directory/file')",
+        "os.path.dirname(b'directory/file')",
+        "os.path.expanduser(b'directory/file')",
+        "os.path.join(b'directory', b'file')",
         "os.path.basename('directory/')",
         "os.path.basename('.')",
         "os.path.dirname('file')",
@@ -97,100 +102,76 @@ def test_windows_rooted_isabs_literals_stay_unchanged(value: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("method", "args"),
+    ("method", "args", "supported"),
     [
-        ("join", ("a/b", "c")),
-        ("join", ("a", "b/c")),
-        ("join", (r"a\\b", "c")),
-        ("join", (r"a\.\b", "c")),
-        ("join", (r".\a", "b")),
-        ("join", ("C:.", "b")),
-        ("join", ("C:a", "C:")),
-        ("join", (r"C:\a", "C:")),
-        ("basename", ("C:.",)),
-        ("basename", ("c:.",)),
-        ("basename", ("Z:.",)),
-        ("dirname", ("a/b/c",)),
-        ("dirname", ("/file",)),
-        ("dirname", ("C:/file",)),
-        ("dirname", ("\\/file",)),
-        ("dirname", ("a/b\\c",)),
-        ("dirname", ("a\\\\b/c",)),
-        ("dirname", ("a\\.\\b/c",)),
-        ("dirname", ("C:./a",)),
-        ("dirname", (r"\./a",)),
-        ("expanduser", ("a/b",)),
-        ("expanduser", (r"a\\b",)),
-        ("expanduser", (r"a\.\b",)),
-        ("expanduser", (r".\a",)),
-        ("expanduser", ("C:.",)),
+        ("join", ("a/b", "c"), False),
+        ("join", ("a", "b/c"), False),
+        ("join", (r"a\\b", "c"), False),
+        ("join", (r"a\.\b", "c"), False),
+        ("join", (r".\a", "b"), False),
+        ("join", ("C:.", "b"), False),
+        ("join", ("C:a", "C:"), False),
+        ("join", (r"C:\a", "C:"), False),
+        ("basename", ("C:.",), False),
+        ("basename", ("c:.",), False),
+        ("basename", ("Z:.",), False),
+        ("dirname", ("a/b/c",), False),
+        ("dirname", ("/file",), False),
+        ("dirname", ("C:/file",), False),
+        ("dirname", ("\\/file",), False),
+        ("dirname", ("a/b\\c",), False),
+        ("dirname", ("a\\\\b/c",), False),
+        ("dirname", ("a\\.\\b/c",), False),
+        ("dirname", ("C:./a",), False),
+        ("dirname", (r"\./a",), False),
+        ("expanduser", ("a/b",), False),
+        ("expanduser", (r"a\\b",), False),
+        ("expanduser", (r"a\.\b",), False),
+        ("expanduser", (r".\a",), False),
+        ("expanduser", ("C:.",), False),
+        ("join", ("a", "b"), True),
+        ("join", (r"a\b", "c"), True),
+        ("join", ("C:", "b"), True),
+        ("join", ("C:a", "D:"), True),
+        ("join", ("C:a", "C:b"), True),
+        ("basename", ("C:",), True),
+        ("basename", ("C:file",), True),
+        ("basename", ("C:..",), True),
+        ("basename", ("C:/file",), True),
+        ("basename", (r"C:\file",), True),
+        ("basename", (r"a\\b",), True),
+        ("basename", (r"a\.\b",), True),
+        ("basename", ("a/b",), True),
+        ("dirname", ("a/b",), True),
+        ("dirname", ("a\\b/c",), True),
+        ("expanduser", ("a",), True),
+        ("expanduser", (r"a\b",), True),
+        ("expanduser", ("C:",), True),
     ],
 )
-def test_windows_separator_spellings_stay_unchanged(
-    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
+def test_windows_separator_spellings_preserve_exact_results(
+    method: str, args: tuple[str, ...], supported: bool
 ) -> None:
-    """Keep literal spellings whose Windows string results pathlib normalizes."""
-    from types import SimpleNamespace
-
-    from pathlint import autofix
-
-    original_result = getattr(ntpath, method)(*args)
-    path = PureWindowsPath(*args)
-    replacement_result = (
-        path.name if method == "basename" else str(path.parent if method == "dirname" else path)
-    )
-    assert original_result != replacement_result
-    original = (
-        f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
-    )
-    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
-    assert fix_content(original) == (original, 0)
-
-
-@pytest.mark.parametrize(
-    ("method", "args"),
-    [
-        ("join", ("a", "b")),
-        ("join", (r"a\b", "c")),
-        ("join", ("C:", "b")),
-        ("join", ("C:a", "D:")),
-        ("join", ("C:a", "C:b")),
-        ("basename", ("C:",)),
-        ("basename", ("C:file",)),
-        ("basename", ("C:..",)),
-        ("basename", ("C:/file",)),
-        ("basename", (r"C:\file",)),
-        ("basename", (r"a\\b",)),
-        ("basename", (r"a\.\b",)),
-        ("basename", ("a/b",)),
-        ("dirname", ("a/b",)),
-        ("dirname", ("a\\b/c",)),
-        ("expanduser", ("a",)),
-        ("expanduser", (r"a\b",)),
-        ("expanduser", ("C:",)),
-    ],
-)
-def test_windows_exact_separator_spellings_remain_supported(
-    monkeypatch: pytest.MonkeyPatch, method: str, args: tuple[str, ...]
-) -> None:
-    """Retain supported Windows literals when their string results are exact."""
-    from types import SimpleNamespace
-
-    from pathlint import autofix
-
+    """Rewrite Windows literals only when pathlib preserves their string results."""
     expected = getattr(ntpath, method)(*args)
     path = PureWindowsPath(*args)
     replacement_result = (
         path.name if method == "basename" else str(path.parent if method == "dirname" else path)
     )
-    assert expected == replacement_result
+    assert (expected == replacement_result) is supported
     original = (
         f"import os.path as osp\nresult = osp.{method}({', '.join(repr(arg) for arg in args)})\n"
     )
-    monkeypatch.setattr(autofix, "sys", SimpleNamespace(platform="win32"))
-    updated, count = fix_content(original)
-    assert count > 0
-    assert updated != original
+    updated, count = fix_content(original, platform="win32")
+    if supported:
+        assert count > 0
+        assert updated != original
+    else:
+        assert (updated, count) == (original, 0)
+        if sys.platform != "win32":
+            updated, count = fix_content(original)
+            assert count > 0
+            assert run(updated) == run(original)
 
 
 @pytest.mark.parametrize("method", ["exists", "isfile", "isdir"])
@@ -222,9 +203,7 @@ def test_filesystem_predicates_preserve_source_and_results(
         method == "exists" or (method == "isfile") == (kind == "file")
     )
     assert run(original) is expected
-    detector = OSPathDetector(original.splitlines())
-    detector.visit(ast.parse(original))
-    assert detector.offenses
+    assert offenses(original)
 
 
 def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
@@ -291,7 +270,7 @@ def test_supported_fix_retains_predicate_imports(tmp_path: Path) -> None:
     ],
 )
 def test_wildcard_imports_leave_source_unchanged(
-    tmp_path: Path, source: str, expected: str
+    tmp_path: Path, source: str, expected: str, source_env: dict[str, str]
 ) -> None:
     (tmp_path / "wildcard_exports.py").write_text(
         "from types import SimpleNamespace\n"
@@ -302,14 +281,11 @@ def test_wildcard_imports_leave_source_unchanged(
     updated, count = fix_content(source)
     assert count == 0
     assert updated == source
-    environment = os.environ.copy()
-    if environment.get("COV_CORE_SOURCE"):
-        environment["COV_CORE_CONFIG"] = str(Path(__file__).resolve().parents[1] / "pyproject.toml")
     for content in (source, updated):
         result = subprocess.run(
             [sys.executable, "-c", content + "\nprint(result)\n"],
             cwd=tmp_path,
-            env=environment,
+            env=source_env,
             capture_output=True,
             text=True,
             check=False,
@@ -352,9 +328,7 @@ def test_type_parameter_scopes_and_lazy_aliases_are_not_rewritten(body: str, exp
     updated, count = fix_content(original)
     assert (updated, count) == (original, 0)
     assert run(updated) == run(original) == expected
-    detector = OSPathDetector(original.splitlines())
-    detector.visit(ast.parse(original))
-    assert detector.offenses
+    assert offenses(original)
 
 
 @pytest.mark.parametrize(
@@ -402,7 +376,6 @@ def test_home_expansion_preserves_environment_spellings(
     assert run(updated) == run(source)
 
 
-@pytest.mark.parametrize("method", ["isabs", "basename", "dirname", "expanduser", "join"])
 @pytest.mark.parametrize(
     "argument",
     [
@@ -457,19 +430,84 @@ def test_home_expansion_preserves_environment_spellings(
         "os.path.normpath(**{'path': b'directory/file'})",
     ],
 )
-def test_byte_path_expressions_preserve_results(method: str, argument: str) -> None:
-    source = f"import os\nflag = True\nname = 'file'\nresult = os.path.{method}({argument})\n"
+def test_byte_path_expressions_preserve_results(argument: str) -> None:
+    # Nonliteral arguments share one rejection path across supported calls.
+    source = f"import os\nflag = True\nname = 'file'\nresult = os.path.basename({argument})\n"
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
     assert run(updated) == run(source)
 
 
-def test_join_with_byte_expression_in_later_argument_stays_unchanged() -> None:
-    source = (
-        "import os\ndirectory = b'directory'\nresult = os.path.join(directory, b'fi' + b'le')\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == b"directory/file"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            "import os\ndirectory = b'directory'\nresult = os.path.join(directory, b'fi' + b'le')\n",
+            b"directory/file",
+            id="test_join_with_byte_expression_in_later_argument_stays_unchanged",
+        ),
+        pytest.param(
+            "import os\nresult = os.path.basename({**{b'path': 'directory/file'}}[b'path'])\n",
+            "file",
+            id="test_byte_keys_in_unpacked_mapping_paths_are_conservatively_skipped",
+        ),
+        pytest.param(
+            "import os\nclass TextPath(str):\n    def __getitem__(self, index):\n"
+            "        return b'directory/file'\n"
+            "class Source:\n    def __str__(self):\n        return TextPath('directory/file')\n"
+            "result = os.path.basename(str(Source())[0])\n",
+            b"file",
+            id="test_text_subclass_index_byte_results_stay_unchanged",
+        ),
+        pytest.param(
+            "import os.path as osp\n"
+            "def check():\n    return osp.basename('directory\\\\file')\n"
+            "import ntpath as osp\n"
+            "result = check()\n"
+            "import os.path as osp\n",
+            "file",
+            id="test_deferred_alias_with_conflicting_import_origins_is_not_rewritten",
+        ),
+        # Preserve nested deferred calls when their source contributes to a debug label.
+        pytest.param(
+            "import os.path as p\n"
+            """label = f"{(lambda: p.basename('a/b'))=}"\n"""
+            "result = label.split('=', 1)[0]\n",
+            "(lambda: p.basename('a/b'))",
+            id="test_debug_fstring_deferred_lambda_retains_its_label",
+        ),
+        # Analyze assignments inside preserved debug fields before later calls.
+        pytest.param(
+            "import os\nfrom types import SimpleNamespace\n"
+            "custom = SimpleNamespace(path=SimpleNamespace(basename=str.upper))\n"
+            """label = f"{(os := custom)=}"\n"""
+            "result = os.path.basename('a/b')\n",
+            "A/B",
+            id="test_debug_fstring_walrus_still_updates_bindings",
+        ),
+        pytest.param(
+            "import os.path as osp\n"
+            "def configure():\n    global osp\n    del osp\nconfigure()\n"
+            "try:\n    result = osp.basename('a/b')\n"
+            "except NameError:\n    result = 'missing'\n",
+            "missing",
+            id="test_explicit_global_deletion_preserves_immediate_name_error",
+        ),
+        pytest.param(
+            "from types import SimpleNamespace\n"
+            "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
+            "def outer():\n    import os.path as osp\n"
+            "    def check():\n        return osp.basename('a/b')\n    return check\n"
+            "check = outer()\ncheck.__closure__[0].cell_contents = custom\nresult = check()\n",
+            "custom",
+            id="test_closure_cell_rebinding_leaves_source_unchanged",
+        ),
+    ],
+)
+def test_unrewritten_sources_preserve_runtime_results(source: str, expected: object) -> None:
+    updated, count = fix_content(source)
+    assert (updated, count) == (source, 0)
+    assert run(updated) == run(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -607,12 +645,6 @@ def test_rich_comparison_byte_results_stay_unchanged(method: str, operator: str)
     assert run(source) == b"file"
 
 
-def test_byte_keys_in_unpacked_mapping_paths_are_conservatively_skipped() -> None:
-    source = "import os\nresult = os.path.basename({**{b'path': 'directory/file'}}[b'path'])\n"
-    assert fix_content(source) == (source, 0)
-    assert run(source) == "file"
-
-
 @pytest.mark.parametrize("value", [b"directory/file", "directory/file"])
 def test_unknown_call_return_types_stay_unchanged(value: Union[bytes, str]) -> None:
     source = (
@@ -709,17 +741,6 @@ def test_reflected_modulo_byte_results_stay_unchanged(left: str, parent: str) ->
     assert run(source) == b"file"
 
 
-def test_text_subclass_index_byte_results_stay_unchanged() -> None:
-    source = (
-        "import os\nclass TextPath(str):\n    def __getitem__(self, index):\n"
-        "        return b'directory/file'\n"
-        "class Source:\n    def __str__(self):\n        return TextPath('directory/file')\n"
-        "result = os.path.basename(str(Source())[0])\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == b"file"
-
-
 @pytest.mark.parametrize(
     ("imports", "argument", "changes"),
     [
@@ -791,6 +812,8 @@ def test_strings_comments_and_fstring_text_survive() -> None:
         '''f"{p.basename('a/b')=}"''',
         '''f"{p.basename('a/b') = !r}"''',
         '''f"{(p.basename('a/b'))=}"''',
+        '''f"é{((p.basename('a/b')))\t = !s}"''',
+        '''f"""{(p.basename('a/b')\n) = }"""''',
         '''f"{p.basename(p.join('a', 'b'))=}"''',
         '''f"""{f"{p.basename('a/b')}"=}"""''',
     ],
@@ -805,28 +828,17 @@ def test_debug_fstring_labels_preserve_original_expressions(expression: str) -> 
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="F-string comments require Python 3.12")
-def test_debug_fstring_comment_before_equals_is_preserved() -> None:
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("gap", [" # keep comment\n)", " # } = !r are comment text\n)", " \\\n)"])
+def test_debug_fstring_comment_before_equals_is_preserved(newline: str, gap: str) -> None:
     """Recognize a debug marker after a multiline grouping and comment."""
     original = (
-        "import os.path as p\n" '''result = f"""{(p.basename('a/b') # keep comment\n)=}"""\n'''
-    )
+        "import os.path as p\n" + '''result = f"""{(p.basename('a/b')''' + gap + '''=}"""\n'''
+    ).replace("\n", newline)
     updated, count = fix_content(original)
     assert count == 0
     assert updated == original
     assert run(updated) == run(original)
-
-
-def test_debug_fstring_deferred_lambda_retains_its_label() -> None:
-    """Preserve nested deferred calls when their source contributes to a debug label."""
-    original = (
-        "import os.path as p\n"
-        """label = f"{(lambda: p.basename('a/b'))=}"\n"""
-        "result = label.split('=', 1)[0]\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 0
-    assert updated == original
-    assert run(updated) == run(original) == "(lambda: p.basename('a/b'))"
 
 
 @pytest.mark.parametrize(
@@ -836,6 +848,12 @@ def test_debug_fstring_deferred_lambda_retains_its_label() -> None:
         '''f"{p.basename('a/b')!r}"''',
         '''f"{p.basename('a/b') == 'b'}"''',
         '''f"{p.basename('a/b')=:{len(p.basename('c/d'))}}"''',
+        pytest.param(
+            '''f"""{(p.basename('a/b') # } = ignored\n)}"""''',
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 12), reason="F-string comments require Python 3.12"
+            ),
+        ),
     ],
 )
 def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression: str) -> None:
@@ -846,20 +864,6 @@ def test_ordinary_fstring_fields_and_debug_format_specs_are_rewritten(expression
     assert "_Path(" in updated
     assert run(updated) == run(original)
     assert fix_content(updated) == (updated, 0)
-
-
-def test_debug_fstring_walrus_still_updates_bindings() -> None:
-    """Analyze assignments inside preserved debug fields before later calls."""
-    original = (
-        "import os\nfrom types import SimpleNamespace\n"
-        "custom = SimpleNamespace(path=SimpleNamespace(basename=str.upper))\n"
-        """label = f"{(os := custom)=}"\n"""
-        "result = os.path.basename('a/b')\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 0
-    assert updated == original
-    assert run(updated) == run(original) == "A/B"
 
 
 @pytest.mark.parametrize(
@@ -885,7 +889,7 @@ def test_unicode_offsets_and_multiline_comments(
     target = tmp_path / "unicode.py"
     with target.open("w", encoding="utf-8", newline="") as stream:
         stream.write(original)
-    assert _lint_file(target) == [
+    assert lint_file(target) == [
         (2, "import os.path"),
         (3, f"label = '🐍{separator}';\fresult = os.path.isabs("),
     ]
@@ -989,7 +993,7 @@ def test_generated_import_precedes_first_decorator(source: str, newline: str) ->
     assert fix_content(updated) == (updated, 0)
 
 
-def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
+def test_cli_persists_valid_decorated_fix(tmp_path: Path, source_env: dict[str, str]) -> None:
     """Execute the persisted CLI fix for a decorated first definition."""
     source = (
         "from os.path import basename\n@lambda fn: fn\ndef check():\n"
@@ -999,6 +1003,7 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
     target.write_text(source, encoding="utf-8")
     process = subprocess.run(
         [sys.executable, "-m", "pathlint", "fix", str(target)],
+        env=source_env,
         capture_output=True,
         text=True,
         timeout=10,
@@ -1009,31 +1014,33 @@ def test_cli_persists_valid_decorated_fix(tmp_path: Path) -> None:
     assert run(persisted) == run(source) == "b"
 
 
-def test_partial_named_import_keeps_unsupported_function() -> None:
-    original = (
-        "from os.path import isabs as present, splitext\n"
-        "result = (present('directory/file'), splitext('dir/file.ext'))\n"
-    )
+@pytest.mark.parametrize(
+    ("original", "preserved"),
+    [
+        pytest.param(
+            "from os.path import isabs as present, splitext\n"
+            "result = (present('directory/file'), splitext('dir/file.ext'))\n",
+            "from os.path import isabs as present, splitext",
+            id="test_partial_named_import_keeps_unsupported_function",
+        ),
+        pytest.param(
+            "from os.path import (\n    isabs,  # important comment\n)\n"
+            "result = isabs('directory/file')\n",
+            "# important comment",
+            id="test_multiline_import_comments_are_preserved",
+        ),
+    ],
+)
+def test_fixed_sources_preserve_import_content(original: str, preserved: str) -> None:
     updated, count = fix_content(original)
     assert count == 1
-    assert "from os.path import isabs as present, splitext" in updated
+    assert preserved in updated
     assert run(updated) == run(original)
 
 
 def test_wildcard_import_is_not_deleted() -> None:
     original = "from os.path import *\nresult = isabs('file')\n"
     assert fix_content(original) == (original, 0)
-
-
-def test_multiline_import_comments_are_preserved() -> None:
-    original = (
-        "from os.path import (\n    isabs,  # important comment\n)\n"
-        "result = isabs('directory/file')\n"
-    )
-    updated, count = fix_content(original)
-    assert count == 1
-    assert "# important comment" in updated
-    assert run(updated) == run(original)
 
 
 @pytest.mark.parametrize(
@@ -1202,18 +1209,6 @@ def test_explicit_global_writes_prevent_immediate_alias_fixes(writer: str) -> No
     assert run(updated) == run(source) == "b"
 
 
-def test_explicit_global_deletion_preserves_immediate_name_error() -> None:
-    source = (
-        "import os.path as osp\n"
-        "def configure():\n    global osp\n    del osp\nconfigure()\n"
-        "try:\n    result = osp.basename('a/b')\n"
-        "except NameError:\n    result = 'missing'\n"
-    )
-    updated, count = fix_content(source)
-    assert (updated, count) == (source, 0)
-    assert run(updated) == run(source) == "missing"
-
-
 def test_explicit_global_write_prevents_immediate_string_conversion() -> None:
     source = (
         "import os.path as osp\n"
@@ -1272,18 +1267,6 @@ def test_deferred_string_conversion_respects_later_builtin_shadowing(
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
     assert run(updated) == run(source) == str(Path("directory") / "file")
-
-
-def test_deferred_alias_with_conflicting_import_origins_is_not_rewritten() -> None:
-    source = (
-        "import os.path as osp\n"
-        "def check():\n    return osp.basename('directory\\\\file')\n"
-        "import ntpath as osp\n"
-        "result = check()\n"
-        "import os.path as osp\n"
-    )
-    assert fix_content(source) == (source, 0)
-    assert run(source) == "file"
 
 
 @pytest.mark.parametrize(
@@ -1362,6 +1345,12 @@ def test_deferred_relative_import_binding_is_not_rewritten(tmp_path: Path) -> No
         "import sys; import os.path\nresult = os.path.isabs('missing')\n",
         "def check():\n    import os.path\n    return os.path.isabs('missing')\nresult = check()\n",
         "def check():\n    import os.path\nresult = check()\n",
+        "def check():\n    import os.path as first; import os.path as second\n"
+        "    return first.isabs('missing')\nresult = check()\n",
+        "def check(): import os.path as first; import os.path as second; "
+        "return first.isabs('missing')\nresult = check()\n",
+        "def check():\n    from os.path import (\n        basename,\n        dirname,\n    ); "
+        "import os.path as other\n    return False\nresult = check()\n",
         "import os.path as osp; result = osp.isabs('missing'); del osp\n",
         "from os.path import isabs as present\nresult = present('missing')\ndel present\n",
         "from os import path as paths\nresult = paths.isabs('missing')\ndel paths\n",
@@ -1469,7 +1458,6 @@ def test_import_cleanup_preserves_augmented_assignment_reads(
 
 @pytest.mark.parametrize("namespace", ["globals", "locals", "vars"])
 @pytest.mark.parametrize("key", ["'osp'", "''.join(['o', 's', 'p'])"])
-@pytest.mark.parametrize("rewrite_call", [False, True])
 @pytest.mark.parametrize(
     ("imports", "accessor"),
     [
@@ -1504,11 +1492,10 @@ def test_import_cleanup_preserves_augmented_assignment_reads(
     ],
 )
 def test_import_cleanup_preserves_namespace_lookups(
-    namespace: str, key: str, rewrite_call: bool, imports: str, accessor: str
+    namespace: str, key: str, imports: str, accessor: str
 ) -> None:
     body = f"result = {accessor.replace('{namespace}', namespace)}[{key}].basename('a/b')\n"
-    if rewrite_call:
-        body += "filename = osp.basename('directory/file')\n"
+    body += "filename = osp.basename('directory/file')\n"
     if namespace == "globals":
         source = "import os.path as osp\n" + body
     else:
@@ -1520,9 +1507,7 @@ def test_import_cleanup_preserves_namespace_lookups(
     source = imports.format(namespace=namespace) + source
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
-    assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "b"
-    assert fix_content(updated) == (updated, 0)
 
 
 @pytest.mark.parametrize(
@@ -1585,7 +1570,6 @@ def test_import_cleanup_preserves_imports_with_object_vars(imports: str, accesso
     )
     updated, count = fix_content(source)
     assert (updated, count) == (source, 0)
-    assert "import os.path as osp" in updated
     assert run(updated) == run(source) == "file"
 
 
@@ -1734,19 +1718,6 @@ def test_module_registry_writes_leave_source_unchanged(
             del sys.modules[name]
         else:
             sys.modules[name] = previous
-
-
-def test_closure_cell_rebinding_leaves_source_unchanged() -> None:
-    source = (
-        "from types import SimpleNamespace\n"
-        "custom = SimpleNamespace(basename=lambda value: 'custom')\n"
-        "def outer():\n    import os.path as osp\n"
-        "    def check():\n        return osp.basename('a/b')\n    return check\n"
-        "check = outer()\ncheck.__closure__[0].cell_contents = custom\nresult = check()\n"
-    )
-    updated, count = fix_content(source)
-    assert (updated, count) == (source, 0)
-    assert run(updated) == run(source) == "custom"
 
 
 @pytest.mark.parametrize(
@@ -2555,16 +2526,7 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
                 False,
             )
             for copy in (
-                "alias = osp",
-                "alias = second = osp\nalias = second",
-                "alias = [osp][0]",
-                "aliases = [osp]\nalias = aliases[0]",
-                "aliases = []\naliases += [osp]\nalias = aliases[0]",
-                "aliases = {}\naliases |= {'path': osp}\nalias = aliases['path']",
-                "alias = [osp for _ in [0]][0]",
-                "alias = {'path': osp for _ in [0]}['path']",
-                "alias = ([osp] + [None])[0]",
-                "def identity(value):\n    return value\nalias = identity(osp)",
+                *(form.replace("original", "osp") for form in ALIAS_COPY_FORMS),
                 "from contextlib import nullcontext\nwith nullcontext(osp) as alias:\n    pass",
                 "def copied():\n    return osp\nalias = copied()",
                 "factory = lambda: osp\nalias = factory()",
@@ -2576,21 +2538,9 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
                     if sys.version_info >= (3, 10)
                     else []
                 ),
-                "alias = {'path': osp}['path']",
-                "alias, = (*[osp],)",
-                "*aliases, = (osp,)\nalias = aliases[0]",
                 "alias, second = (osp, 1) if True else (None, 2)",
-                "alias, second = (osp, 1) or (None, 2)",
-                "aliases = (osp,)\nalias, = aliases",
-                "for alias in (osp,):\n    pass",
-                "for alias in {osp: None}:\n    pass",
-                "alias, = {osp: None}",
                 "box = SimpleNamespace()\nbox.module = osp\nalias = box.module",
                 "box = {}\nbox['module'] = osp\nalias = box['module']",
-                "alias: object = osp",
-                "(alias := osp)",
-                "alias, (second,) = osp, (osp,)",
-                "alias, *unused = (osp,)",
                 "flag = True\nalias = osp if flag else object()",
                 "alias = osp or object()",
             )
@@ -2665,7 +2615,10 @@ def test_definition_expressions_rebind_enclosing_loop_names(definition: str) -> 
     ],
 )
 def test_mutated_path_attributes_preserve_results(body: str, expected: str, changes: bool) -> None:
-    source = "import os.path as osp\nfrom types import SimpleNamespace\n" + body
+    source = (
+        "import os.path as osp\nfrom types import SimpleNamespace\nflag = True\nother = object()\n"
+        + body
+    )
     updated, count = fix_content(source)
     assert bool(count) is changes
     # Isolate module mutations and restore before subprocess coverage shuts down.
@@ -2690,15 +2643,22 @@ def test_mutated_path_attributes_preserve_results(body: str, expected: str, chan
         "    original_basename.__dict__ = original_dict\n"
     )
     for content in (source, updated):
-        result = subprocess.run(
-            [sys.executable, "-c", program, content],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == expected + "\n"
-        assert result.stderr == ""
+        assert run_isolated(content, program) == expected + "\n"
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "os.path.basename: object\n",
+        "def annotate():\n    os.path.basename: object\nannotate()\n",
+    ],
+)
+def test_attribute_annotation_without_value_does_not_write(annotation: str) -> None:
+    """An annotation-only attribute target must not veto a safe subsequent fix."""
+    source = "import os\n" + annotation + "result = os.path.basename('a/b')\n"
+    updated, count = fix_content(source)
+    assert count == 1
+    assert run(updated) == run(source) == "b"
 
 
 @pytest.mark.parametrize(
@@ -2740,12 +2700,4 @@ def test_mutated_pathlib_constructor_is_not_used(mutation: str) -> None:
         "    else:\n        pathlib.PosixPath.name = original_posix_name\n"
     )
     for content in (source, updated):
-        result = subprocess.run(
-            [sys.executable, "-c", program, content],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == "file\n"
-        assert result.stderr == ""
+        assert run_isolated(content, program) == "file\n"

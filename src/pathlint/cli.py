@@ -7,51 +7,17 @@ import difflib
 import json
 import os
 import sys
-from importlib.metadata import PackageNotFoundError, version
-from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from pathlint import __version__
+from pathlint._source import physical_lines
 from pathlint.discovery import DEFAULT_EXCLUDES, discover_files, display_path
-from pathlint.linter import _lint_file
-
-
-def _legacy_args(argv: list[str]) -> list[str]:
-    """Normalize legacy path and fix flags into an explicit command.
-
-    :param list[str] argv: Command-line arguments without the executable name.
-    :return list[str]: Arguments with a check/fix command, or unchanged command/help/version args.
-    """
-    if argv and argv[0] in {"check", "fix", "files", "-h", "--help", "--version"}:
-        return argv
-    normalized = []
-    check_options: set[int] = set()
-    fix = False
-    value_pending = False
-    for index, arg in enumerate(argv):
-        if value_pending:
-            normalized.append(arg)
-            value_pending = False
-        elif arg == "--":
-            normalized.extend(argv[index:])
-            break
-        elif arg == "--fix":
-            fix = True
-        else:
-            if arg in {"--stats", "--aggressive"}:
-                check_options.add(len(normalized))
-            normalized.append(arg)
-            if arg == "--dry-run":
-                fix = True
-            value_pending = arg in {"-e", "--exclude", "--output-format"}
-    if fix:
-        # The legacy parser accepted these flags and ignored them during fixes.
-        normalized = [arg for index, arg in enumerate(normalized) if index not in check_options]
-    return ["fix" if fix else "check", *normalized]
+from pathlint.linter import lint_file
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse canonical commands and legacy invocation aliases.
+    """Parse an explicit check, fix, or files command.
 
     :param list[str] | None argv: Arguments without the executable name; None uses sys.argv[1:].
     :return argparse.Namespace: Parsed options with a command and at least one input path.
@@ -60,13 +26,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="pathlint",
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        epilog="Bare pathlint checks '.'. Legacy pathlint PATH and --fix/--dry-run remain supported.",
     )
-    try:
-        installed_version = version("pathlint")
-    except PackageNotFoundError:
-        installed_version = "unknown (not installed)"
-    parser.add_argument("--version", action="version", version=f"%(prog)s {installed_version}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     command_parsers = {}
     for command, help_text in (
@@ -131,9 +92,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 help="Print diffs without writing files; exit 1 if changes are proposed",
             )
             subparser.add_argument("--no-color", action="store_true", help="Disable colored diffs")
-    arguments = _legacy_args(list(sys.argv[1:] if argv is None else argv))
-    if arguments[0] in command_parsers:
-        args = command_parsers[arguments[0]].parse_intermixed_args(arguments[1:])
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in command_parsers:
+        command_arguments = arguments[1:]
+        if "--" in command_arguments:
+            sentinel = command_arguments.index("--")
+            # Python <3.12 can drop the sentinel before reparsing positionals.
+            # Relative prefixes keep names starting with '-' positional in both passes.
+            command_arguments[sentinel + 1 :] = [
+                f"./{argument}" if argument.startswith("-") else argument
+                for argument in command_arguments[sentinel + 1 :]
+            ]
+        args = command_parsers[arguments[0]].parse_intermixed_args(command_arguments)
         args.command = arguments[0]
     else:
         args = parser.parse_args(arguments)
@@ -194,7 +164,7 @@ def _check(
     checked = 0
     for filepath in files:
         try:
-            offenses = _lint_file(filepath)
+            offenses = lint_file(filepath)
         except (OSError, UnicodeError, SyntaxError) as error:
             errors.append(_error(filepath, error))
             continue
@@ -218,10 +188,14 @@ def _check(
         "violations": len(diagnostics),
         "errors": len(errors),
     }
-    statistics = [
-        {"path": path, "violations": count}
-        for path, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5]
-    ]
+    statistics = (
+        [
+            {"path": path, "violations": count}
+            for path, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+        if stats
+        else []
+    )
     if output_format == "json":
         report = {"diagnostics": diagnostics, "errors": errors, "summary": summary}
         if stats:
@@ -231,13 +205,17 @@ def _check(
         _print_errors(errors)
         for diagnostic in diagnostics:
             print(
-                f"{diagnostic['path']}:{diagnostic['line']}: PL001 os.path usage: {diagnostic['source']}"
+                f"{diagnostic['path']}:{diagnostic['line']}: "
+                f"{diagnostic['code']} os.path usage: {diagnostic['source']}"
             )
         if not quiet:
             if diagnostics:
                 noun = "violation" if len(diagnostics) == 1 else "violations"
                 print(
                     f"Found {len(diagnostics)} {noun} in {len(counts)} of {checked} files checked."
+                )
+                print(
+                    "The experimental fixer supports some calls; other usages need manual migration."
                 )
                 if aggressive:
                     print("WARNING: ARE YOU KIDDING ME? USE PATHLIB!")
@@ -273,6 +251,7 @@ def _fix(
     :param bool no_color: Disable ANSI diff colors even on an interactive terminal.
     :return int: 2 for errors, 1 for proposed dry-run edits, or 0 otherwise.
     """
+    # Keep rewriting imports and setup out of check/files startup.
     from pathlint.autofix import fix_content
 
     fixed = replacements = 0
@@ -295,8 +274,8 @@ def _fix(
         label = display_path(filepath)
         if dry_run:
             for line in difflib.unified_diff(
-                list(StringIO(original, newline="")),
-                list(StringIO(updated, newline="")),
+                physical_lines(original),
+                physical_lines(updated),
                 fromfile=label,
                 tofile=f"{label} (fixed)",
             ):
@@ -316,6 +295,8 @@ def _fix(
         print(f"{action} {replacements} replacements in {fixed} files.")
         if fixed and not dry_run:
             print("Review the changes and test your code.")
+        if files:
+            print("Run 'pathlint check' for remaining usages that may need manual migration.")
         if errors:
             print(f"Errors: {len(errors)}")
     return 2 if errors else int(dry_run and replacements > 0)
