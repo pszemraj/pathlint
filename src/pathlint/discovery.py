@@ -30,7 +30,12 @@ def display_path(filepath: Path) -> str:
 def _normalize_patterns(
     patterns: Collection[str], *, directory_only: bool = False
 ) -> list[tuple[str, bool, bool, bool]]:
-    """Prepare pattern text and directory, path, and absolute matching flags."""
+    """Prepare pattern text and directory, path, and absolute matching flags.
+
+    :param Collection[str] patterns: Exclusion patterns to normalize.
+    :param bool directory_only: Treat every pattern as matching directories only.
+    :return list[tuple[str, bool, bool, bool]]: Pattern text with directory-only, path-pattern, and absolute flags.
+    """
     normalized = []
     for pattern in patterns:
         directories = directory_only or pattern.endswith("/")

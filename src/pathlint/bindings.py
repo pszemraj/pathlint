@@ -6,7 +6,12 @@ import ast
 
 
 def import_binding(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> tuple[str, str | None]:
-    """Return the local binding and absolute origin introduced by an import alias."""
+    """Return the local binding and absolute origin introduced by an import alias.
+
+    :param ast.Import | ast.ImportFrom node: Import statement containing the alias.
+    :param ast.alias alias: Import alias to resolve.
+    :return tuple[str, str | None]: Local binding name and its absolute origin, if known.
+    """
     if isinstance(node, ast.Import):
         name = alias.asname or alias.name.split(".")[0]
         return name, alias.name if alias.asname else name
@@ -15,7 +20,11 @@ def import_binding(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> tuple
 
 
 def declaration_name(node: ast.AST) -> str | None:
-    """Return a definition, exception alias, or pattern capture name."""
+    """Return a definition, exception alias, or pattern capture name.
+
+    :param ast.AST node: Definition, exception handler, or match pattern to inspect.
+    :return str | None: Matching declaration's name, or None for other or unnamed nodes.
+    """
     if isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler)
     ) or type(node).__name__ in {"MatchAs", "MatchStar", "MatchMapping"}:

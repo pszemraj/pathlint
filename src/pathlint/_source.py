@@ -16,7 +16,11 @@ def physical_lines(text: str) -> list[str]:
 
 
 def is_docstring(node: ast.AST) -> bool:
-    """Identify a standalone string expression used as a module header."""
+    """Identify a standalone string expression used as a module header.
+
+    :param ast.AST node: Syntax node to inspect.
+    :return bool: Whether the node is a string expression.
+    """
     return (
         isinstance(node, ast.Expr)
         and isinstance(node.value, ast.Constant)
