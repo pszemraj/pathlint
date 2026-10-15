@@ -7,6 +7,41 @@ import ast
 from pathlint._source import _Source, is_docstring, physical_lines
 from pathlint.bindings import _ScopeNames, import_binding
 
+_NAMESPACE_BUILTINS = frozenset(
+    {
+        "globals",
+        "locals",
+        "vars",
+        "eval",
+        "exec",
+        "__dict__",
+        "__import__",
+        "getattr",
+        "setattr",
+        "delattr",
+    }
+)
+_ATTRIBUTE_MUTATORS = frozenset({"__setattr__", "__delattr__"})
+_NAMESPACE_IMPORTS = {
+    "builtins": _NAMESPACE_BUILTINS,
+    "sys": frozenset({"modules"}),
+    "importlib": frozenset({"import_module"}),
+}
+_NAMESPACE_ATTRIBUTES = _ATTRIBUTE_MUTATORS.union(*_NAMESPACE_IMPORTS.values()) | {
+    "__globals__",
+    "__builtins__",
+    "__getattribute__",
+    "__getattr__",
+    "__closure__",
+    "__defaults__",
+    "__kwdefaults__",
+    "__annotations__",
+    "cell_contents",
+    "f_globals",
+    "f_locals",
+    "f_builtins",
+}
+
 
 def _skip_semicolon(
     content: str, offset: int, following: str, *, whitespace: str | None = " \t"
@@ -87,36 +122,22 @@ def _references_namespace(nodes: tuple[ast.AST, ...], *, include_dir: bool = Fal
     :param bool include_dir: Include read-only name listings for import retention.
     :return bool: Whether a known namespace capability is referenced.
     """
-    builtins = {
-        "globals",
-        "locals",
-        "vars",
-        "eval",
-        "exec",
-        "__dict__",
-        "__import__",
-        "getattr",
-        "setattr",
-        "delattr",
-    }
-    if include_dir:
-        builtins.add("dir")
-    attribute_mutators = {"__setattr__", "__delattr__"}
-    namespace_imports = {
-        "builtins": builtins,
-        "sys": {"modules"},
-        "importlib": {"import_module"},
-    }
     namespace_names = (
-        builtins
+        set(_NAMESPACE_BUILTINS)
         | {"__builtins__", "__annotations__"}
         | {
             alias.asname or alias.name
             for node in nodes
             if isinstance(node, ast.ImportFrom)
             for alias in node.names
-            if alias.name in attribute_mutators
-            or (not node.level and alias.name in namespace_imports.get(node.module, ()))
+            if alias.name in _ATTRIBUTE_MUTATORS
+            or (
+                not node.level
+                and (
+                    alias.name in _NAMESPACE_IMPORTS.get(node.module, ())
+                    or (include_dir and node.module == "builtins" and alias.name == "dir")
+                )
+            )
         }
     )
     namespace_names.update(
@@ -126,26 +147,16 @@ def _references_namespace(nodes: tuple[ast.AST, ...], *, include_dir: bool = Fal
         for alias in node.names
         if alias.name == "builtins"
     )
-    namespace_attributes = attribute_mutators.union(*namespace_imports.values()) | {
-        "__globals__",
-        "__dict__",
-        "__builtins__",
-        "__getattribute__",
-        "__getattr__",
-        "__closure__",
-        "__defaults__",
-        "__kwdefaults__",
-        "__annotations__",
-        "cell_contents",
-        "f_globals",
-        "f_locals",
-        "f_builtins",
-    }
+    if include_dir:
+        namespace_names.add("dir")
     return any(
         isinstance(getattr(node, "ctx", None), ast.Load)
         and (
             (isinstance(node, ast.Name) and node.id in namespace_names)
-            or (isinstance(node, ast.Attribute) and node.attr in namespace_attributes)
+            or (
+                isinstance(node, ast.Attribute)
+                and (node.attr in _NAMESPACE_ATTRIBUTES or (include_dir and node.attr == "dir"))
+            )
         )
         for node in nodes
     )
