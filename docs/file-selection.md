@@ -36,8 +36,11 @@ patterns. Explicit exclusions add to the built-in exclusions.
   `*` can span `/`; `**` has no additional meaning. Quote wildcards to prevent
   shell expansion. These patterns do not support Git-style `!` negation.
 
-Built-in exclusions are `__pycache__`, `.venv`, `venv`, `.git`, `node_modules`,
-`.tox`, `build`, and `dist`.
+Built-in directory exclusions are `__pycache__`, `.venv`, `venv`, `.git`,
+`node_modules`, `.tox`, `build`, `dist`, `.mypy_cache`, `.pytest_cache`,
+`.ruff_cache`, `.nox`, `.eggs`, `*.egg-info`, `site-packages`, `.idea`, and
+`.vscode`. The `*.egg-info` pattern matches directory names such as
+`pathlint.egg-info`; explicitly named Python files still bypass these defaults.
 
 Disable Git ignores or built-in exclusions independently:
 
@@ -53,6 +56,11 @@ that Git does not ignore. Git handles nested `.gitignore` rules, negation,
 repository-local excludes, and global ignores. Tracked files remain eligible
 even when they match an ignore rule. Nonexcluded nested repositories use their
 own Git rules.
+
+Unreadable selected directories or Git ignore metadata produce discovery errors.
+Warnings confined to excluded directories are suppressed. An unreadable global
+ignore file remains an error even when stored in an excluded directory, because
+it can affect the selected files elsewhere.
 
 Git is optional. Without Git, directory scans use built-in and explicit
 exclusions; `.gitignore` rules are not interpreted.

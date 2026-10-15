@@ -6,12 +6,30 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 DEFAULT_EXCLUDES = frozenset(
-    {"__pycache__", ".venv", "venv", ".git", "node_modules", ".tox", "build", "dist"}
+    {
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".git",
+        "node_modules",
+        ".tox",
+        "build",
+        "dist",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".nox",
+        ".eggs",
+        "*.egg-info",
+        "site-packages",
+        ".idea",
+        ".vscode",
+    }
 )
 
 
@@ -19,7 +37,7 @@ def display_path(filepath: Path) -> str:
     """Format a path relative to the working directory when possible.
 
     :param Path filepath: File or directory path to display.
-    :return str: A POSIX-style relative path, or the supplied path if it is outside cwd.
+    :return str: A POSIX-style path, relative to cwd when possible.
     """
     try:
         return filepath.relative_to(Path.cwd()).as_posix()
@@ -89,6 +107,93 @@ def _is_excluded(
     return False
 
 
+def _git_listing(git: str, root: Path) -> subprocess.CompletedProcess[bytes]:
+    """List tracked and nonignored untracked paths beneath a Git scan root.
+
+    :param str git: Git executable to invoke.
+    :param Path root: Directory whose files should be listed.
+    :return subprocess.CompletedProcess[bytes]: NUL-delimited paths and Git diagnostics.
+    """
+    return subprocess.run(
+        [
+            git,
+            "-C",
+            str(root),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ],
+        capture_output=True,
+        check=False,
+        env=dict(os.environ, LC_ALL="C"),
+    )
+
+
+def _classify_git_stderr(
+    stderr: bytes,
+    *,
+    git: str,
+    worktree: Path,
+    root: Path,
+    alias: Path,
+    excluded: Callable[..., bool],
+    errors: list[tuple[Path, str]],
+) -> None:
+    """Keep selection errors while suppressing warnings confined to excluded trees.
+
+    :param bytes stderr: Diagnostics from a successful Git listing.
+    :param str git: Git executable used to check global-ignore configuration when needed.
+    :param Path worktree: Repository root used by Git's diagnostic paths.
+    :param Path root: Directory being scanned.
+    :param Path alias: Original spelling of the scan root before symlink resolution.
+    :param Callable[..., bool] excluded: Check resolved and alias paths with directory semantics.
+    :param list[tuple[Path, str]] errors: Append diagnostics here, retaining them if a later Git command fails.
+    """
+    directory_warning = rb"warning: could not open directory '(.*?)': [^\n]*\n"
+    for warning in re.finditer(directory_warning, stderr, re.DOTALL):
+        candidate = worktree / os.fsdecode(warning[1])
+        candidate_alias = alias / candidate.relative_to(root)
+        if not excluded(candidate, candidate_alias, directory=True):
+            errors.append((candidate, warning[0].decode(errors="replace").strip()))
+    remaining = re.sub(directory_warning, b"", stderr, flags=re.DOTALL)
+    ignore_warning = rb"warning: unable to access '(.*?)': [^\n]*\n"
+    global_ignore_config = None
+    for warning in re.finditer(ignore_warning, remaining, re.DOTALL):
+        candidate = worktree / os.fsdecode(warning[1])
+        if candidate.name != ".gitignore":
+            continue
+        try:
+            candidate_alias = alias / candidate.relative_to(root)
+        except ValueError:
+            continue
+        if not excluded(candidate.parent, candidate_alias.parent, directory=True):
+            continue
+        # An excluded tree's .gitignore can also be the global ignore file,
+        # which still controls selection outside that tree. Preserve its warning.
+        if global_ignore_config is None:
+            global_ignore_config = subprocess.run(
+                [git, "-C", str(root), "config", "--path", "--null", "--get", "core.excludesFile"],
+                capture_output=True,
+                check=False,
+            )
+        if global_ignore_config.returncode == 0:
+            global_ignore = worktree / os.fsdecode(global_ignore_config.stdout.removesuffix(b"\0"))
+            try:
+                if candidate.resolve() == global_ignore.resolve():
+                    continue
+            except (OSError, RuntimeError):
+                continue
+        elif global_ignore_config.returncode != 1:
+            continue
+        remaining = remaining.replace(warning[0], b"")
+    if remaining.strip():
+        errors.append((root, remaining.decode(errors="replace").strip()))
+
+
 def discover_files(
     paths: Sequence[Path],
     *,
@@ -104,7 +209,7 @@ def discover_files(
 
     :param Sequence[Path] paths: Files or directories to select from.
     :param Sequence[str] exclude_patterns: Explicit name or path exclusions, including for named files.
-    :param Collection[str] default_excludes: Directory names excluded during automatic discovery.
+    :param Collection[str] default_excludes: Directory name patterns excluded during automatic discovery.
     :param bool respect_gitignore: Use Git's tracked and nonignored untracked files inside worktrees when available.
     :return tuple[list[Path], list[tuple[Path, str]]]: Sorted absolute files and failing path/message pairs.
     """
@@ -170,6 +275,8 @@ def discover_files(
         for directory, dirs, names in os.walk(root, onerror=onerror):
             current = Path(directory)
             current_alias = alias / current.relative_to(root)
+            # A walk already enumerates metadata; Git's flat listing instead
+            # needs ancestor probes for files indexed beneath embedded repos.
             if git and current != root and (".git" in dirs or ".git" in names):
                 scan(current, current_alias)
                 dirs[:] = []
@@ -201,75 +308,20 @@ def discover_files(
                     check=False,
                 )
                 if worktree.returncode == 0:
-                    listing = subprocess.run(
-                        [
-                            git,
-                            "-C",
-                            str(root),
-                            "ls-files",
-                            "--cached",
-                            "--others",
-                            "--exclude-standard",
-                            "-z",
-                            "--",
-                            ".",
-                        ],
-                        capture_output=True,
-                        check=False,
-                        env=dict(os.environ, LC_ALL="C"),
-                    )
+                    listing = _git_listing(git, root)
                     if listing.returncode:
                         errors.append((root, listing.stderr.decode(errors="replace").strip()))
                         return
-                    directory_warning = rb"warning: could not open directory '(.*?)': [^\n]*\n"
                     worktree_root = Path(os.fsdecode(worktree.stdout.removesuffix(b"\n")))
-                    for warning in re.finditer(directory_warning, listing.stderr, re.DOTALL):
-                        candidate = worktree_root / os.fsdecode(warning[1])
-                        candidate_alias = alias / candidate.relative_to(root)
-                        if not excluded(candidate, candidate_alias, directory=True):
-                            errors.append((candidate, warning[0].decode(errors="replace").strip()))
-                    remaining = re.sub(directory_warning, b"", listing.stderr, flags=re.DOTALL)
-                    ignore_warning = rb"warning: unable to access '(.*?)': [^\n]*\n"
-                    global_ignore_config = None
-                    for warning in re.finditer(ignore_warning, remaining, re.DOTALL):
-                        candidate = worktree_root / os.fsdecode(warning[1])
-                        if candidate.name != ".gitignore":
-                            continue
-                        try:
-                            candidate_alias = alias / candidate.relative_to(root)
-                        except ValueError:
-                            continue
-                        if not excluded(candidate.parent, candidate_alias.parent, directory=True):
-                            continue
-                        if global_ignore_config is None:
-                            global_ignore_config = subprocess.run(
-                                [
-                                    git,
-                                    "-C",
-                                    str(root),
-                                    "config",
-                                    "--path",
-                                    "--null",
-                                    "--get",
-                                    "core.excludesFile",
-                                ],
-                                capture_output=True,
-                                check=False,
-                            )
-                        if global_ignore_config.returncode == 0:
-                            global_ignore = worktree_root / os.fsdecode(
-                                global_ignore_config.stdout.removesuffix(b"\0")
-                            )
-                            try:
-                                if candidate.resolve() == global_ignore.resolve():
-                                    continue
-                            except (OSError, RuntimeError):
-                                continue
-                        elif global_ignore_config.returncode != 1:
-                            continue
-                        remaining = remaining.replace(warning[0], b"")
-                    if remaining.strip():
-                        errors.append((root, remaining.decode(errors="replace").strip()))
+                    _classify_git_stderr(
+                        listing.stderr,
+                        git=git,
+                        worktree=worktree_root,
+                        root=root,
+                        alias=alias,
+                        excluded=excluded,
+                        errors=errors,
+                    )
                     for item in listing.stdout.split(b"\0"):
                         if not item:
                             continue

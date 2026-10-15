@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from pathlint.discovery import DEFAULT_EXCLUDES, discover_files, display_path
+from pathlint.discovery import (
+    DEFAULT_EXCLUDES,
+    _classify_git_stderr,
+    discover_files,
+    display_path,
+)
 
 
 def write(root: Path, name: str) -> Path:
@@ -142,13 +147,45 @@ def test_absolute_exclusions_match_ancestors_above_cwd(
 def test_default_excludes_and_opt_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     wanted = write(tmp_path, "keep.py")
-    hidden = [write(tmp_path, f"{name}/nested/file.py") for name in DEFAULT_EXCLUDES]
+    hidden = [
+        write(tmp_path, f"{pattern.replace('*', 'package')}/nested/file.py")
+        for pattern in DEFAULT_EXCLUDES
+    ]
     assert discover_files([tmp_path], respect_gitignore=False) == ([wanted], [])
     assert discover_files([tmp_path], default_excludes=(), respect_gitignore=False) == (
         sorted([wanted, *hidden]),
         [],
     )
     assert discover_files([tmp_path / "build/nested"]) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".nox",
+        ".eggs",
+        "package.egg-info",
+        "site-packages",
+        ".idea",
+        ".vscode",
+    ],
+)
+@pytest.mark.parametrize("respect_gitignore", [False, True])
+def test_generated_directory_defaults_preserve_explicit_file_opt_in(
+    repo: Path, directory: str, respect_gitignore: bool
+) -> None:
+    wanted = write(repo, "keep.py")
+    generated = write(repo, f"{directory}/generated.py")
+    git(repo, "add", str(generated.relative_to(repo)))
+    assert discover_files([repo], respect_gitignore=respect_gitignore) == ([wanted], [])
+    assert discover_files([repo], default_excludes=(), respect_gitignore=respect_gitignore) == (
+        sorted([wanted, generated]),
+        [],
+    )
+    assert discover_files([generated], respect_gitignore=respect_gitignore) == ([generated], [])
 
 
 def test_explicit_file_bypasses_defaults_but_not_cli_exclusion(
@@ -313,7 +350,7 @@ def test_display_path_uses_relative_internal_and_absolute_external_paths(
     cwd.mkdir()
     monkeypatch.chdir(cwd)
     assert display_path(cwd / "src/file.py") == "src/file.py"
-    assert display_path(tmp_path / "other.py") == str(tmp_path / "other.py")
+    assert display_path(tmp_path / "other.py") == (tmp_path / "other.py").as_posix()
 
 
 def test_walk_switches_to_git_for_worktree_beneath_nonrepository(
@@ -583,6 +620,130 @@ def test_successful_git_listing_preserves_other_stderr(
 
     monkeypatch.setattr("pathlint.discovery.subprocess.run", warn_listing)
     assert discover_files([repo]) == ([wanted], [(repo, "warning: listing incomplete")])
+
+
+@pytest.mark.parametrize(
+    ("warning", "excluded", "global_role", "config_status", "location", "config_queries"),
+    [
+        ("empty", False, "missing", 1, None, 0),
+        ("directory", False, "missing", 1, "blocked", 0),
+        ("directory", True, "missing", 1, None, 0),
+        ("ignore", False, "missing", 1, "root", 0),
+        ("ignore", True, "missing", 1, None, 1),
+        ("ignore", True, "matching-relative", 0, "root", 1),
+        ("ignore", True, "matching-absolute", 0, "root", 1),
+        ("ignore", True, "other", 0, None, 1),
+        ("ignore", True, "cyclic", 0, "root", 1),
+        ("ignore", True, "missing", 2, "root", 1),
+        ("outside-ignore", True, "missing", 1, "root", 0),
+        ("metadata", True, "missing", 1, "root", 0),
+        ("unknown", True, "missing", 1, "root", 0),
+        ("multiple-ignores", True, "missing", 1, None, 1),
+    ],
+)
+def test_git_warning_classification_without_permission_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    warning: str,
+    excluded: bool,
+    global_role: str,
+    config_status: int,
+    location: str | None,
+    config_queries: int,
+) -> None:
+    worktree = tmp_path / "repo"
+    root = worktree / "src"
+    root.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    warnings = {
+        "empty": b"",
+        "directory": b"warning: could not open directory 'src/blocked/': Permission denied\n",
+        "ignore": b"warning: unable to access 'src/vendor/.gitignore': Permission denied\n",
+        "outside-ignore": b"warning: unable to access 'outside/.gitignore': Permission denied\n",
+        "metadata": b"warning: unable to access '.git/info/exclude': Permission denied\n",
+        "unknown": b"warning: listing incomplete\n",
+        "multiple-ignores": (
+            b"warning: unable to access 'src/vendor/.gitignore': Permission denied\n"
+            b"warning: unable to access 'src/vendor-two/.gitignore': Permission denied\n"
+        ),
+    }
+    configured = root / "vendor/.gitignore"
+    if global_role == "matching-relative":
+        configured = configured.relative_to(worktree)
+    elif global_role == "other":
+        configured = worktree / "global/.gitignore"
+    elif global_role == "cyclic":
+        configured = root / "global-loop"
+        configured.symlink_to(configured)
+    queries = []
+
+    def run_config(args, **kwargs):
+        queries.append(args)
+        assert args == [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "--path",
+            "--null",
+            "--get",
+            "core.excludesFile",
+        ]
+        return subprocess.CompletedProcess(
+            args, config_status, os.fsencode(configured) + b"\0", b""
+        )
+
+    def is_excluded(candidate: Path, candidate_alias: Path, *, directory: bool) -> bool:
+        assert directory
+        assert candidate_alias == alias / candidate.relative_to(root)
+        return excluded
+
+    monkeypatch.setattr("pathlint.discovery.subprocess.run", run_config)
+    stderr = warnings[warning]
+    errors = []
+    _classify_git_stderr(
+        stderr,
+        git="git",
+        worktree=worktree,
+        root=root,
+        alias=alias,
+        excluded=is_excluded,
+        errors=errors,
+    )
+    expected_path = root if location == "root" else root / "blocked"
+    assert errors == ([] if location is None else [(expected_path, stderr.decode().strip())])
+    assert len(queries) == config_queries
+
+
+def test_git_config_execution_failure_keeps_earlier_directory_errors(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(repo, "keep.py")
+    original_run = subprocess.run
+    directory_warning = b"warning: could not open directory 'blocked/': Permission denied\n"
+
+    def fail_config(args, **kwargs):
+        if "core.excludesFile" in args:
+            raise PermissionError("Git executable is inaccessible")
+        result = original_run(args, **kwargs)
+        if "ls-files" in args:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                result.stdout,
+                directory_warning
+                + b"warning: unable to access 'vendor/.gitignore': Permission denied\n",
+            )
+        return result
+
+    monkeypatch.setattr("pathlint.discovery.subprocess.run", fail_config)
+    assert discover_files([repo], exclude_patterns=("vendor",)) == (
+        [],
+        [
+            (repo / "blocked", directory_warning.decode().strip()),
+            (repo, "Git executable is inaccessible"),
+        ],
+    )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Directory permissions require Unix")
