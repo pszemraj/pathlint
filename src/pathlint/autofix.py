@@ -27,7 +27,7 @@ REPLACEMENTS = {
 class _PathFixer(OSPathDetector):
     """Resolve imported calls and collect conservative pathlib source edits."""
 
-    _use_literal_conditions = False
+    _require_definite_bindings = True
 
     def __init__(
         self,
@@ -58,7 +58,6 @@ class _PathFixer(OSPathDetector):
         # Deferred bodies may run before later imports, or between rebindings.
         # Same-spelling writes in unrelated scopes also exclude an alias: avoiding
         # uncertain migrations needs no execution-order or call-graph analysis.
-        self.deferred_rebindings: set[str] = set()
         # Late str imports and conflicting import origins invalidate deferred calls.
         self.deferred_rebindings.update(
             name
@@ -67,7 +66,6 @@ class _PathFixer(OSPathDetector):
         )
         # Explicit global writes can affect immediate calls after a deferred body
         # runs, including through nested functions or class suites.
-        self.global_rebindings: set[str] = set()
         names: set[str] = set()
         for node in nodes:
             if isinstance(node, ast.Name):
@@ -107,29 +105,6 @@ class _PathFixer(OSPathDetector):
         while self.path_name in names:
             self.path_name += "_"
 
-    def _defer_body(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp
-    ) -> None:
-        """Freeze certain enclosing imports without borrowing later bindings.
-
-        :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp node: Deferred body owner.
-        """
-        scopes = [{**scope, **dict.fromkeys(self.deferred_rebindings)} for scope in self.scopes]
-        self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
-
-    def resolve_name(self, name: str) -> str | None:
-        """Exclude explicit global writes and aliases rebound around deferred bodies.
-
-        :return str | None: Import spelling, or None for a rebound or unresolved name.
-        """
-        if name in self.global_rebindings:
-            return None
-        if name in self.deferred_rebindings and any(
-            kind in {"function", "generator"} for kind in self.scope_kinds
-        ):
-            return None
-        return super().resolve_name(name)
-
     def constructor(self) -> str:
         """Reuse a visible pathlib constructor or request an import for a new alias.
 
@@ -149,83 +124,6 @@ class _PathFixer(OSPathDetector):
                     return f"{name}.Path"
         self.needs_import = True
         return self.path_name
-
-    def visit_Try(self, node: ast.Try) -> None:
-        """Merge successful and interrupted bindings before visiting the final suite.
-
-        :param ast.Try node: Try statement whose suites may establish different bindings.
-        """
-        scope = self.scopes[-1]
-        before = scope.copy()
-        for statement in node.body:
-            self.visit(statement)
-        successful = scope.copy()
-        names = _ScopeNames()
-        for statement in (*node.body, *node.handlers, *node.orelse):
-            names.visit(statement)
-        uncertain = before.copy()
-        uncertain.update(dict.fromkeys(names.names))
-        # Exceptions can interrupt any binding before a later import restores it.
-        self.merge_bindings([before, successful, uncertain])
-        interrupted = scope.copy()
-        alternatives = []
-        for handler in node.handlers:
-            scope.clear()
-            scope.update(interrupted)
-            self.visit(handler)
-            alternatives.append(scope.copy())
-        scope.clear()
-        scope.update(successful)
-        for statement in node.orelse:
-            self.visit(statement)
-        alternatives.append(scope.copy())
-        if node.finalbody:
-            alternatives.append(interrupted)
-        self.merge_bindings(alternatives)
-        for statement in node.finalbody:
-            self.visit(statement)
-
-    visit_TryStar = visit_Try
-
-    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
-        """Visit reachable calls without assuming every context binding completes.
-
-        :param ast.With | ast.AsyncWith node: Context statement that may suppress exceptions.
-        """
-        self.generic_visit(node)
-        names = _ScopeNames()
-        names.visit(node)
-        # An earlier context can suppress failures in later entries or body statements.
-        self.scopes[-1].update(dict.fromkeys(names.names))
-
-    visit_AsyncWith = visit_With
-
-    def visit_Match(self, node: ast.AST) -> None:
-        """Merge case bodies and bindings retained when patterns or guards fail.
-
-        :param ast.AST node: Match statement with a subject and case suites.
-        """
-        self.visit(node.subject)
-        scope = self.scopes[-1]
-        before = scope.copy()
-        fallthrough = before
-        alternatives = [before]
-        for case in node.cases:
-            scope.clear()
-            scope.update(fallthrough)
-            self.visit(case.pattern)
-            if case.guard:
-                self.visit(case.guard)
-            captured = scope.copy()
-            for statement in case.body:
-                self.visit(statement)
-            alternatives.append(scope.copy())
-            # Captures and guard assignments can survive a failed guard. A taken
-            # case body, however, never flows into the next case.
-            self.merge_bindings([fallthrough, captured])
-            fallthrough = scope.copy()
-        alternatives.append(fallthrough)
-        self.merge_bindings(alternatives)
 
     def visit_FormattedValue(self, node: ast.FormattedValue) -> None:
         """Analyze debug field expressions without changing their displayed source labels.

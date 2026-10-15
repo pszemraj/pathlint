@@ -13,7 +13,8 @@ from pathlint.mutations import MutationCollector
 class OSPathDetector(MutationCollector):
     """Find os.path usage while respecting import aliases and local shadowing."""
 
-    _use_literal_conditions = True
+    # Checking reports possible uses; fixing requires bindings certain on every path.
+    _require_definite_bindings = False
 
     def __init__(self, mutations: MutationCollector | None = None) -> None:
         """Initialize lexical bindings, optionally reusing collected mutation facts.
@@ -25,6 +26,8 @@ class OSPathDetector(MutationCollector):
         self.scopes: list[dict[str, str | None]] = [{}]
         self.scope_kinds = ["module"]
         self.scope_globals: list[set[str]] = [set()]
+        self.global_rebindings: set[str] = set()
+        self.deferred_rebindings: set[str] = set()
         self.deferred: list[
             tuple[
                 ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp,
@@ -39,10 +42,13 @@ class OSPathDetector(MutationCollector):
         self._collect_mutation_aliases(node)
         for statement in node.body:
             self.visit(statement)
-        # Deferred bodies use enclosing bindings after those scopes finish defining names.
-        # This also avoids rewriting aliases that the enclosing scope reassigns later.
+        module = self.scopes[0]
+        # Captures stay live until their enclosing suite finishes defining names.
+        # Replay each body against private maps so simulated external writes cannot
+        # change the module or another pending body's enclosing bindings.
         for function, scopes, kinds, globals_ in self.deferred:
-            self.scopes, self.scope_kinds = scopes.copy(), kinds.copy()
+            self.scopes = [scope.copy() for scope in scopes]
+            self.scope_kinds = kinds.copy()
             self.scope_globals = globals_.copy()
             if isinstance(function, ast.GeneratorExp):
                 self._visit_comprehension_body(function)
@@ -67,7 +73,7 @@ class OSPathDetector(MutationCollector):
             self.scope_globals.append(names.globals)
             for statement in body:
                 self.visit(statement)
-        self.scopes, self.scope_kinds = [self.scopes[0]], ["module"]
+        self.scopes, self.scope_kinds = [module], ["module"]
         self.scope_globals = [set()]
 
     def resolve_name(self, name: str) -> str | None:
@@ -75,6 +81,12 @@ class OSPathDetector(MutationCollector):
 
         :return str | None: Import spelling, or None for an unbound or shadowed name.
         """
+        if name in self.global_rebindings:
+            return None
+        if name in self.deferred_rebindings and any(
+            kind in {"function", "generator"} for kind in self.scope_kinds
+        ):
+            return None
         if name.startswith("__") and not name.endswith("__") and "class" in self.scope_kinds:
             # Private identifiers use a mangled spelling throughout class scopes.
             return None
@@ -167,11 +179,96 @@ class OSPathDetector(MutationCollector):
         for statement in node.orelse:
             self.visit(statement)
         alternative = scope.copy()
-        if self._use_literal_conditions and isinstance(node.test, ast.Constant):
+        if not self._require_definite_bindings and isinstance(node.test, ast.Constant):
             # Still inspect both suites, but literal conditions determine later bindings.
             self.merge_bindings([body if node.test.value else alternative])
         else:
             self.merge_bindings([body, alternative])
+
+    def visit_Try(self, node: ast.Try) -> None:
+        """Inspect try suites, merging exceptional bindings only for rewriting.
+
+        :param ast.Try node: Try statement whose suites may establish different bindings.
+        """
+        if not self._require_definite_bindings:
+            self.generic_visit(node)
+            return
+        scope = self.scopes[-1]
+        before = scope.copy()
+        for statement in node.body:
+            self.visit(statement)
+        successful = scope.copy()
+        names = _ScopeNames()
+        for statement in (*node.body, *node.handlers, *node.orelse):
+            names.visit(statement)
+        uncertain = before.copy()
+        uncertain.update(dict.fromkeys(names.names))
+        # Exceptions can interrupt any binding before a later import restores it.
+        self.merge_bindings([before, successful, uncertain])
+        interrupted = scope.copy()
+        alternatives = []
+        for handler in node.handlers:
+            scope.clear()
+            scope.update(interrupted)
+            self.visit(handler)
+            alternatives.append(scope.copy())
+        scope.clear()
+        scope.update(successful)
+        for statement in node.orelse:
+            self.visit(statement)
+        alternatives.append(scope.copy())
+        if node.finalbody:
+            alternatives.append(interrupted)
+        self.merge_bindings(alternatives)
+        for statement in node.finalbody:
+            self.visit(statement)
+
+    visit_TryStar = visit_Try
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        """Inspect context suites, requiring completed bindings only for rewriting.
+
+        :param ast.With | ast.AsyncWith node: Context statement that may suppress exceptions.
+        """
+        self.generic_visit(node)
+        if not self._require_definite_bindings:
+            return
+        names = _ScopeNames()
+        names.visit(node)
+        # An earlier context can suppress failures in later entries or body statements.
+        self.scopes[-1].update(dict.fromkeys(names.names))
+
+    visit_AsyncWith = visit_With
+
+    def visit_Match(self, node: ast.AST) -> None:
+        """Inspect cases, merging failed-case bindings only for rewriting.
+
+        :param ast.AST node: Match statement with a subject and case suites.
+        """
+        if not self._require_definite_bindings:
+            self.generic_visit(node)
+            return
+        self.visit(node.subject)
+        scope = self.scopes[-1]
+        before = scope.copy()
+        fallthrough = before
+        alternatives = [before]
+        for case in node.cases:
+            scope.clear()
+            scope.update(fallthrough)
+            self.visit(case.pattern)
+            if case.guard:
+                self.visit(case.guard)
+            captured = scope.copy()
+            for statement in case.body:
+                self.visit(statement)
+            alternatives.append(scope.copy())
+            # Captures and guard assignments can survive a failed guard. A taken
+            # case body, however, never flows into the next case.
+            self.merge_bindings([fallthrough, captured])
+            fallthrough = scope.copy()
+        alternatives.append(fallthrough)
+        self.merge_bindings(alternatives)
 
     def merge_bindings(self, alternatives: list[dict[str, str | None]]) -> None:
         """Retain an import origin only when every alternative agrees on it.
@@ -214,13 +311,15 @@ class OSPathDetector(MutationCollector):
     def _defer_body(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp
     ) -> None:
-        """Queue a body with live enclosing bindings for subsequent analysis.
+        """Capture live enclosing bindings for checks or freeze them for rewriting.
 
         :param ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp node: Deferred body owner.
         """
-        self.deferred.append(
-            (node, self.scopes.copy(), self.scope_kinds.copy(), self.scope_globals.copy())
-        )
+        scopes = self.scopes.copy()
+        if self._require_definite_bindings:
+            # Rewrites cannot borrow imports that appear after body creation.
+            scopes = [{**scope, **dict.fromkeys(self.deferred_rebindings)} for scope in scopes]
+        self.deferred.append((node, scopes, self.scope_kinds.copy(), self.scope_globals.copy()))
 
     def visit_arguments(self, node: ast.arguments) -> None:
         """Visit function defaults before their subsequently evaluated annotations."""

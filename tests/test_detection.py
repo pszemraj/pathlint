@@ -1385,6 +1385,79 @@ def test_function_resolves_import_defined_after_definition() -> None:
     assert offenses(source) == {2}
 
 
+@pytest.mark.parametrize("declaration", ["global", "nonlocal"])
+@pytest.mark.parametrize("reader_first", [False, True])
+@pytest.mark.parametrize("late_import", [False, True])
+@pytest.mark.parametrize("reader_kind", ["function", "lambda", "generator"])
+def test_uncalled_deferred_writer_does_not_change_sibling_bindings(
+    declaration: str, reader_first: bool, late_import: bool, reader_kind: str
+) -> None:
+    writer = (
+        "def uncalled():\n"
+        "    class ChangesBinding:\n"
+        f"        {declaration} os\n"
+        "        os = object()\n"
+    )
+    call = "os.path.basename('a/b')"
+    if reader_kind == "function":
+        reader = f"def reader():\n    return {call}\n"
+        result = "reader()"
+    elif reader_kind == "lambda":
+        reader = f"reader = lambda: {call}\n"
+        result = "reader()"
+    else:
+        reader = f"reader = ({call} for _ in [0])\n"
+        result = "next(reader)"
+    body = reader + writer if reader_first else writer + reader
+    body = body + "import os\n" if late_import else "import os\n" + body
+    source = (
+        "def outer():\n" + indent(body + f"return {result}\n", "    ") + "result = outer()\n"
+        if declaration == "nonlocal"
+        else body + f"result = {result}\n"
+    )
+    target = next(index for index, line in enumerate(source.splitlines(), 1) if call in line)
+    detector = OSPathDetector()
+    detector.visit(ast.parse(source))
+    assert detector.offenses == {target}
+    if declaration == "global":
+        assert detector.resolve_name("os") == "os"
+    assert execute(source)["result"] == "b"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nif False:\n    os = object()\nresult = os.path.isabs('missing')\n",
+        "try:\n    import os\nexcept ImportError:\n    pass\nresult = os.path.isabs('missing')\n",
+        "from contextlib import nullcontext\nwith nullcontext():\n    import os\n"
+        "result = os.path.isabs('missing')\n",
+        pytest.param(
+            "match 1:\n    case 1:\n        import os\nresult = os.path.isabs('missing')\n",
+            marks=pytest.mark.skipif(not hasattr(ast, "Match"), reason="requires Python 3.10"),
+        ),
+        pytest.param(
+            "try:\n    import os\nexcept* ImportError:\n    pass\n"
+            "result = os.path.isabs('missing')\n",
+            marks=pytest.mark.skipif(not hasattr(ast, "TryStar"), reason="requires Python 3.11"),
+        ),
+        "import asyncio\nfrom contextlib import asynccontextmanager\n"
+        "@asynccontextmanager\nasync def context():\n    yield\n"
+        "async def checked():\n    async with context():\n        import os\n"
+        "    return os.path.isabs('missing')\nresult = asyncio.run(checked())\n",
+    ],
+    ids=["literal-if", "try", "with", "match", "try-star", "async-with"],
+)
+def test_detection_reports_possible_imports_but_fixing_requires_definite_bindings(
+    source: str,
+) -> None:
+    target = next(
+        index for index, line in enumerate(source.splitlines(), 1) if "os.path.isabs" in line
+    )
+    assert offenses(source) == {target}
+    assert fix_content(source) == (source, 0)
+    assert execute(source)["result"] is False
+
+
 def test_function_respects_global_reassignment_before_call() -> None:
     source = """
         import os
