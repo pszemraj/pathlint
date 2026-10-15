@@ -58,6 +58,7 @@ def test_check_defaults_to_current_directory(
     assert output.out == (
         "sample.py:2: PL001 os.path usage: value = os.path.isabs('example')\n"
         "Found 1 violation in 1 of 1 files checked.\n"
+        "The experimental fixer supports some calls; other usages need manual migration.\n"
     )
     assert output.err == ""
     assert f"{chr(27)}[" not in output.out
@@ -280,6 +281,12 @@ def test_predicate_findings_are_not_autofixed(
     for args in (["fix", "--dry-run", "--quiet"], ["fix", "--quiet"]):
         assert cli.main(args) == 0
         assert capsys.readouterr() == ("", "")
+        assert path.read_bytes() == original
+    for args in (["fix", "--dry-run"], ["fix"]):
+        assert cli.main(args) == 0
+        output = capsys.readouterr()
+        assert "manual migration" in output.out
+        assert output.err == ""
         assert path.read_bytes() == original
     assert cli.main(["check", "--quiet"]) == 1
     assert "PL001" in capsys.readouterr().out

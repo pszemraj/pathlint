@@ -21,6 +21,7 @@ See [file selection](file-selection.md) for exclusions and Git rules, and
 ```text
 src/utils.py:12: PL001 os.path usage: os.path.exists(value)
 Found 1 violation in 1 of 42 files checked.
+The experimental fixer supports some calls; other usages need manual migration.
 ```
 
 Paths are relative to the working directory when possible, and absolute for
@@ -111,6 +112,10 @@ pathlint fix src/ --dry-run --no-color
 ```
 
 Diff colors are enabled only on interactive terminals.
+
+The summary reminds you to run `pathlint check` for remaining usages that may
+need manual migration. Replacement totals include import edits; they are not a
+count of resolved `PL001` lines. `--quiet` suppresses these summaries.
 
 ## Exit codes
 

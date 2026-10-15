@@ -179,10 +179,14 @@ def _check(
         "violations": len(diagnostics),
         "errors": len(errors),
     }
-    statistics = [
-        {"path": path, "violations": count}
-        for path, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5]
-    ]
+    statistics = (
+        [
+            {"path": path, "violations": count}
+            for path, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+        if stats
+        else []
+    )
     if output_format == "json":
         report = {"diagnostics": diagnostics, "errors": errors, "summary": summary}
         if stats:
@@ -200,6 +204,9 @@ def _check(
                 noun = "violation" if len(diagnostics) == 1 else "violations"
                 print(
                     f"Found {len(diagnostics)} {noun} in {len(counts)} of {checked} files checked."
+                )
+                print(
+                    "The experimental fixer supports some calls; other usages need manual migration."
                 )
                 if aggressive:
                     print("WARNING: ARE YOU KIDDING ME? USE PATHLIB!")
@@ -235,6 +242,7 @@ def _fix(
     :param bool no_color: Disable ANSI diff colors even on an interactive terminal.
     :return int: 2 for errors, 1 for proposed dry-run edits, or 0 otherwise.
     """
+    # Keep rewriting imports and setup out of check/files startup.
     from pathlint.autofix import fix_content
 
     fixed = replacements = 0
@@ -278,6 +286,8 @@ def _fix(
         print(f"{action} {replacements} replacements in {fixed} files.")
         if fixed and not dry_run:
             print("Review the changes and test your code.")
+        if files:
+            print("Run 'pathlint check' for remaining usages that may need manual migration.")
         if errors:
             print(f"Errors: {len(errors)}")
     return 2 if errors else int(dry_run and replacements > 0)
